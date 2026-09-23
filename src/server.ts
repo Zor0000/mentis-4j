@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import process from "node:process";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -9,6 +10,7 @@ async function main(): Promise<void> {
   let database: Database | undefined;
 
   try {
+    if (existsSync(".env")) process.loadEnvFile(".env");
     database = new Database();
     await database.verifyConnectivity();
 

@@ -96,7 +96,7 @@ export class Database {
             ) - 2;
           const result = transaction.run(statement, {
             ...parameters,
-            __mentisRowLimit: MAX_READ_ROWS + 1,
+            __mentisRowLimit: neo4j.int(MAX_READ_ROWS + 1),
           });
 
           result.subscribe({

@@ -51,7 +51,7 @@ Implement only the architecture requested. If the requested design has problems,
 
 ## Documentation
 
-Update `README.md` in the same change when modifying behavior, MCP APIs, lifecycle, configuration, operations, or repository structure. Update planning documents only when the underlying product or design decision changes; keep proposals clearly distinguished from implemented behavior.
+Do not update `README.md` unless the user explicitly asks for a README update. Update planning documents only when the underlying product or design decision changes; keep proposals clearly distinguished from implemented behavior.
 
 Keep durable architecture notes, workflows, and project-specific conventions in the appropriate documentation instead of growing this file unnecessarily.
 

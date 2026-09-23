@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import neo4j from "neo4j-driver";
 import { Database } from "../dist/db.js";
 
 function fakeDatabase(values) {
@@ -39,7 +40,8 @@ test("bounds recall rows and serialized output size", async () => {
     "UNWIND range(1, 101) AS value RETURN value",
     { taskId: "task-1" },
   );
-  assert.equal(byRows.parameters().__mentisRowLimit, 101);
+  assert.ok(neo4j.isInt(byRows.parameters().__mentisRowLimit));
+  assert.equal(byRows.parameters().__mentisRowLimit.toNumber(), 101);
   assert.match(byRows.statement(), /CALL \{/);
   assert.match(byRows.statement(), /LIMIT \$__mentisRowLimit$/);
   assert.equal(rows.rows.length, 100);
