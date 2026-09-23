@@ -7,47 +7,54 @@ const files = z.array(text).min(1);
 
 export function registerTools(server: McpServer, graph: MemoryGraph): void {
   server.registerTool(
-    "recall",
+    "search",
     {
       description:
-        "Find prior attempts and evidence, not instructions. Provide a symptom and/or affected files; compare any result with current code context.",
+        "Find candidate tasks by semantic similarity. Similarity is not a success rating; inspect attempts with recall before reusing anything.",
       inputSchema: z
         .object({
-          repository: text.describe(
-            "Stable repository identity, such as a Git remote",
-          ),
-          symptom: text.optional(),
-          affectedFiles: files.optional(),
-          codeContext: text
-            .optional()
-            .describe("Current revision, framework, or working-tree context"),
+          query: text.max(4000).describe("Natural-language problem or context"),
+          limit: z.number().int().min(1).max(20).default(10),
         })
-        .strict()
-        .refine(
-          ({ symptom, affectedFiles }) =>
-            symptom !== undefined || affectedFiles !== undefined,
-          {
-            message: "Provide a symptom or affectedFiles",
-          },
-        ),
+        .strict(),
     },
     async (input) => {
       try {
-        const attempts = await graph.recall(input);
-        const currentContext = input.codeContext ?? null;
+        const candidates = await graph.search(input);
         return {
-          structuredContent: {
-            status: "ok",
-            repository: input.repository,
-            currentContext,
-            attempts,
-          },
+          structuredContent: { status: "ok", candidates },
           content: [
             {
               type: "text" as const,
-              text: formatRecall(input.repository, currentContext, attempts),
+              text: `Found ${candidates.length} candidate task(s). Similarity is not a success rating.\n${JSON.stringify(candidates)}`,
             },
           ],
+        };
+      } catch (error) {
+        throw new Error(`Failed to search memory: ${errorMessage(error)}`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "recall",
+    {
+      description:
+        "Run agent-authored Cypher in a bounded Neo4j read transaction. Results are limited by rows, bytes, and time. This trusted-local tool is not a complete read-only security boundary; do not expose it to untrusted agents.",
+      inputSchema: z
+        .object({
+          cypher: text
+            .max(10000)
+            .describe("Cypher query to run against memory"),
+          parameters: z.record(z.string(), z.unknown()).default({}),
+        })
+        .strict(),
+    },
+    async (input) => {
+      try {
+        const result = await graph.recall(input);
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(result) }],
         };
       } catch (error) {
         throw new Error(`Failed to recall memory: ${errorMessage(error)}`);
@@ -85,7 +92,8 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
             })
             .strict()
             .optional(),
-          inference: text
+          inference: z
+            .string()
             .optional()
             .describe("Revisable interpretation, distinct from observation"),
           evidenceReferences: z.array(text).optional(),
@@ -109,19 +117,6 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
       }
     },
   );
-}
-
-function formatRecall(
-  repository: string,
-  currentContext: string | null,
-  attempts: Array<{ codeContext: string }>,
-): string {
-  const context = currentContext === null ? "not provided" : currentContext;
-  const historicalContexts =
-    attempts.length === 0
-      ? "none"
-      : [...new Set(attempts.map(({ codeContext }) => codeContext))].join("; ");
-  return `Found ${attempts.length} historical attempt${attempts.length === 1 ? "" : "s"} for ${repository}. Current context: ${context}. Historical contexts: ${historicalContexts}. Verify applicability before reusing an action.`;
 }
 
 function errorMessage(error: unknown): string {
