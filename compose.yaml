@@ -1,0 +1,13 @@
+services:
+  neo4j:
+    image: neo4j:5.26.0-community
+    environment:
+      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env or the shell}"
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+    volumes:
+      - neo4j_data:/data
+
+volumes:
+  neo4j_data:
