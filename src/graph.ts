@@ -119,6 +119,8 @@ const searchQuery = `
 `;
 
 const MAX_SEARCH_LIMIT = 20;
+const MAX_VECTOR_MATCHES = 200;
+const MAX_ATTEMPTS_PER_TASK = 5;
 
 interface SearchMatch {
   candidate: SearchCandidate;
@@ -181,25 +183,25 @@ export class MemoryGraph {
     const embedding = await this.embed(input.query, "query", requestId);
     logger.debug("search embedding ready", requestId);
     validateEmbedding(embedding);
-    const candidates = await this.database.read(
+    const tasks = await this.database.read(
       async (transaction) => {
-        let candidateLimit = Math.min(limit * 10, 100);
-        let matches: SearchMatch[] = [];
-        let hasMoreCandidates: boolean;
-        do {
-          const result = await transaction.run(searchQuery, {
-            embedding,
-            candidateLimit,
-          });
-          logger.debug(
-            `search fetched ${result.records.length} vector matches`,
-            requestId,
-          );
-          matches = [];
-          const seen = new Set<string>();
-          for (const record of result.records) {
-            const attempt = mapAttempt(record);
-            const candidate: SearchCandidate = {
+        const result = await transaction.run(searchQuery, {
+          embedding,
+          candidateLimit: MAX_VECTOR_MATCHES,
+        });
+        logger.debug(
+          `search fetched ${result.records.length} vector matches`,
+          requestId,
+        );
+        const matches = new Map<string, SearchMatch[]>();
+        for (const record of result.records) {
+          const attempt = mapAttempt(record);
+          const key = JSON.stringify([attempt.repository, attempt.taskId]);
+          const taskMatches = matches.get(key) ?? [];
+          if (taskMatches.length >= MAX_ATTEMPTS_PER_TASK) continue;
+          taskMatches.push({
+            attempt,
+            candidate: {
               repository: attempt.repository,
               taskId: attempt.taskId,
               matchedAttemptPreview: record.get(
@@ -207,57 +209,60 @@ export class MemoryGraph {
               ) as string,
               similarity: record.get("similarity") as number,
               relevanceScore: null,
-            };
-            const key = JSON.stringify([
-              candidate.repository,
-              candidate.taskId,
-            ]);
-            if (!seen.has(key)) {
-              seen.add(key);
-              matches.push({ candidate, attempt });
-              if (matches.length === limit) return matches;
-            }
-          }
-          hasMoreCandidates = result.records.length === candidateLimit;
-          candidateLimit *= 2;
-        } while (hasMoreCandidates);
-        return matches;
+            },
+          });
+          matches.set(key, taskMatches);
+        }
+        return [...matches.values()];
       },
       undefined,
       requestId,
     );
 
-    const vectorCandidates = candidates.map(({ candidate }) => candidate);
     try {
-      const scored = await Promise.all(
-        candidates.map(async ({ candidate, attempt }) => ({
-          ...candidate,
-          relevanceScore: await this.relevance(input.query, attempt, requestId),
-        })),
-      );
-      return scored
-        .filter(
-          (
-            candidate,
-          ): candidate is SearchCandidate & {
-            relevanceScore: number;
-          } =>
-            candidate.relevanceScore !== null &&
-            candidate.relevanceScore >= 0.5,
-        )
+      const best = new Map<
+        string,
+        SearchCandidate & { relevanceScore: number }
+      >();
+      const matches = tasks.flat();
+      for (
+        let offset = 0;
+        offset < matches.length;
+        offset += MAX_SEARCH_LIMIT
+      ) {
+        const scored = await Promise.all(
+          matches
+            .slice(offset, offset + MAX_SEARCH_LIMIT)
+            .map(async ({ candidate, attempt }) => ({
+              ...candidate,
+              relevanceScore: await this.relevance(
+                input.query,
+                attempt,
+                requestId,
+              ),
+            })),
+        );
+        for (const candidate of scored) {
+          const key = JSON.stringify([candidate.repository, candidate.taskId]);
+          const previous = best.get(key);
+          if (!previous || candidate.relevanceScore > previous.relevanceScore) {
+            best.set(key, candidate);
+          }
+        }
+      }
+      return [...best.values()]
+        .filter((candidate) => candidate.relevanceScore >= 0.5)
         .sort(
           (a, b) =>
             b.relevanceScore - a.relevanceScore || b.similarity - a.similarity,
-        );
+        )
+        .slice(0, limit);
     } catch {
       logger.info(
         "search relevance unavailable; returning vector candidates",
         requestId,
       );
-      return vectorCandidates.map((candidate) => ({
-        ...candidate,
-        relevanceScore: null,
-      }));
+      return tasks.slice(0, limit).map(([{ candidate }]) => candidate);
     }
   }
 

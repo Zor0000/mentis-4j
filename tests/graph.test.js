@@ -113,7 +113,7 @@ test("embeds the typed attempt as a document before writing it", async () => {
   assert.equal(recorded.verification, "failed");
 });
 
-test("search expands its attempt pool to fill the distinct task limit", async () => {
+test("search uses a bounded vector pool without stopping at the task limit", async () => {
   const matches = [
     ...Array.from({ length: 100 }, (_, index) => ({
       repository: attempt.repository,
@@ -156,7 +156,7 @@ test("search expands its attempt pool to fill the distinct task limit", async ()
 
   const candidates = await graph.search({ query: "test", limit: 10 });
 
-  assert.deepEqual(candidateLimits, [100, 200]);
+  assert.deepEqual(candidateLimits, [200]);
   assert.equal(candidates.length, 10);
   assert.equal(
     new Set(
@@ -219,7 +219,14 @@ test("filters and ranks distinct tasks by Jev relevance", async () => {
       similarity: 0.7,
     },
   ];
-  const probabilities = { "a-first": 0.6, b: 0.5, c: 0.8, d: 0.8, e: 0.49 };
+  const probabilities = {
+    "a-first": 0.6,
+    "a-duplicate": 0.7,
+    b: 0.5,
+    c: 0.8,
+    d: 0.8,
+    e: 0.49,
+  };
   const scoredAttempts = [];
   const graph = graphForSearch(rows, async (query, matchedAttempt) => {
     assert.equal(query, "search query");
@@ -233,16 +240,89 @@ test("filters and ranks distinct tasks by Jev relevance", async () => {
 
   const candidates = await graph.search({ query: "search query", limit: 10 });
 
-  assert.deepEqual(scoredAttempts, ["a-first", "b", "c", "d", "e"]);
+  assert.deepEqual(scoredAttempts, [
+    "a-first",
+    "a-duplicate",
+    "b",
+    "c",
+    "d",
+    "e",
+  ]);
   assert.deepEqual(
     candidates.map(({ taskId, relevanceScore }) => [taskId, relevanceScore]),
     [
       ["task-d", 0.8],
       ["task-c", 0.8],
-      ["task-a", 0.6],
+      ["task-a", 0.7],
       ["task-b", 0.5],
     ],
   );
+});
+
+test("search scores up to five attempts per task and selects its most useful match", async () => {
+  const rows = [
+    {
+      repository: attempt.repository,
+      taskId: "resolved",
+      id: "failed",
+      similarity: 0.99,
+      matchedAttemptPreview: "failed check",
+    },
+    {
+      repository: attempt.repository,
+      taskId: "rejected",
+      id: "rejected",
+      similarity: 0.98,
+    },
+    {
+      repository: attempt.repository,
+      taskId: "resolved",
+      id: "passed",
+      similarity: 0.97,
+      matchedAttemptPreview: "verified fix",
+    },
+    ...Array.from({ length: 5 }, (_, index) => ({
+      repository: attempt.repository,
+      taskId: "resolved",
+      id: `later-${index}`,
+      similarity: 0.96 - index / 100,
+    })),
+  ];
+  const scores = {
+    failed: 0.41,
+    rejected: 0.34,
+    passed: 0.74,
+    "later-0": 0.54,
+    "later-1": 0.2,
+    "later-2": 0.2,
+    "later-3": 0.9,
+    "later-4": 0.9,
+  };
+  const scored = [];
+  const graph = graphForSearch(rows, async (_query, matchedAttempt) => {
+    scored.push(matchedAttempt.id);
+    return scores[matchedAttempt.id];
+  });
+
+  const candidates = await graph.search({ query: "login loop", limit: 1 });
+
+  assert.deepEqual(scored, [
+    "failed",
+    "passed",
+    "later-0",
+    "later-1",
+    "later-2",
+    "rejected",
+  ]);
+  assert.deepEqual(candidates, [
+    {
+      repository: attempt.repository,
+      taskId: "resolved",
+      matchedAttemptPreview: "verified fix",
+      similarity: 0.97,
+      relevanceScore: 0.74,
+    },
+  ]);
 });
 
 test("empty vector results do not call Jev", async () => {
@@ -260,6 +340,12 @@ test("Jev failures return all vector candidates with null relevance scores", asy
       taskId: "task-a",
       id: "a",
       similarity: 0.9,
+    },
+    {
+      repository: attempt.repository,
+      taskId: "task-a",
+      id: "a-second",
+      similarity: 0.85,
     },
     {
       repository: attempt.repository,

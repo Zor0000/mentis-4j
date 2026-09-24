@@ -12,11 +12,19 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
     "search",
     {
       description:
-        "Find candidate tasks by semantic similarity. Similarity is not a success rating; inspect attempts with recall before reusing anything.",
+        "Find candidate tasks by semantic similarity. Returns at most limit distinct tasks, not limit vector matches. Each task previews a matched attempt; similarity is not a success rating. Inspect full histories with recall before reusing anything.",
       inputSchema: z
         .object({
           query: text.max(4000).describe("Natural-language problem or context"),
-          limit: z.number().int().min(1).max(20).default(10),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(20)
+            .default(10)
+            .describe(
+              "Maximum number of distinct task results (not vector matches)",
+            ),
         })
         .strict(),
     },
