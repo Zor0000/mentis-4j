@@ -8,23 +8,19 @@ import { test } from "node:test";
 
 const server = fileURLToPath(new URL("../dist/server.js", import.meta.url));
 
-test("Node's env-file flag loads .env before configuring Neo4j", () => {
+test("server loads .env before configuring Neo4j", () => {
   const cwd = mkdtempSync(join(tmpdir(), "mentis-env-"));
   try {
     writeFileSync(
       join(cwd, ".env"),
       "NEO4J_PASSWORD=local-password\nNEO4J_URI=invalid://host\n",
     );
-    const { stderr, status } = spawnSync(
-      process.execPath,
-      ["--env-file-if-exists=.env", server],
-      {
-        cwd,
-        env: { PATH: process.env.PATH },
-        encoding: "utf8",
-        timeout: 5000,
-      },
-    );
+    const { stderr, status } = spawnSync(process.execPath, [server], {
+      cwd,
+      env: { PATH: process.env.PATH },
+      encoding: "utf8",
+      timeout: 5000,
+    });
     assert.equal(status, 1);
     assert.match(stderr, /Unknown scheme: invalid/);
     assert.doesNotMatch(stderr, /NEO4J_PASSWORD is required/);

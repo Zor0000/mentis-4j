@@ -1,4 +1,5 @@
 import process from "node:process";
+import { existsSync } from "node:fs";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Database } from "./db.js";
@@ -10,6 +11,7 @@ async function main(): Promise<void> {
   let database: Database | undefined;
 
   try {
+    if (existsSync(".env")) process.loadEnvFile(".env");
     database = new Database();
     await database.verifyConnectivity();
     logger.info("Mentis connected to Neo4j");
