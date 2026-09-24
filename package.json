@@ -7,9 +7,12 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint --ext .ts src",
-    "format": "prettier --check 'src/**/*.ts' 'tests/**/*.js' package.json .eslintrc.json",
+    "format": "prettier --check 'src/**/*.ts' 'tests/**/*.js' package.json .eslintrc.json wrangler.jsonc",
     "test": "npm run build && node --test tests/*.test.js",
-    "start": "node dist/server.js",
+    "start": "node dist/process/server.js",
+    "worker:build": "wrangler deploy --dry-run",
+    "worker:dev": "wrangler dev",
+    "worker:deploy": "wrangler deploy",
     "prepare": "husky"
   },
   "dependencies": {
@@ -23,6 +26,7 @@
     "eslint": "^8.57.1",
     "husky": "^9.1.7",
     "prettier": "^3.9.9",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "wrangler": "^4.138.0"
   }
 }

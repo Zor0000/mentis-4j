@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { JEV_MODEL, jevRelevance } from "../dist/jev.js";
+import { JEV_MODEL, jevRelevance } from "../dist/lib/jev.js";
 
 const attempt = {
   id: "attempt-id",

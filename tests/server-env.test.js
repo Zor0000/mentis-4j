@@ -6,7 +6,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
-const server = fileURLToPath(new URL("../dist/server.js", import.meta.url));
+const server = fileURLToPath(
+  new URL("../dist/process/server.js", import.meta.url),
+);
 
 test("server loads .env before configuring Neo4j", () => {
   const cwd = mkdtempSync(join(tmpdir(), "mentis-env-"));

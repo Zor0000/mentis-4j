@@ -4,7 +4,7 @@ import {
   EMBEDDING_DIMENSIONS,
   EMBEDDING_MODEL,
   embedText,
-} from "../dist/embeddings.js";
+} from "../dist/lib/embeddings.js";
 
 test("sends the fixed model and input type; propagates provider failures", async () => {
   const oldKey = process.env.OPENROUTER_API_KEY;

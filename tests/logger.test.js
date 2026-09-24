@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { logger } from "../dist/logger.js";
-import { registerTools } from "../dist/tools.js";
+import { logger } from "../dist/lib/logger.js";
+import { registerTools } from "../dist/lib/tools.js";
 
 test("logs JSON to stderr, defaults to debug and filters by level", () => {
   const previousLevel = process.env.LOG_LEVEL;

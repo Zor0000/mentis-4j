@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import neo4j from "neo4j-driver";
-import { Database } from "../dist/db.js";
+import { Database } from "../dist/lib/db.js";
 
 function fakeDatabase(values) {
   let statement;

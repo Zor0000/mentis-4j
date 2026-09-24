@@ -15,7 +15,7 @@ test(
     const client = new Client({ name: "mcp-test", version: "1.0.0" });
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: ["dist/server.js"],
+      args: ["dist/process/server.js"],
       env: {
         NEO4J_PASSWORD: process.env.NEO4J_PASSWORD,
         NEO4J_URI: process.env.NEO4J_URI ?? "bolt://127.0.0.1:7687",

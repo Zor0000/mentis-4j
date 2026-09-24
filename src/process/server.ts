@@ -2,10 +2,10 @@ import process from "node:process";
 import { existsSync } from "node:fs";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Database } from "./db.js";
-import { MemoryGraph } from "./graph.js";
-import { registerTools } from "./tools.js";
-import { logger } from "./logger.js";
+import { Database } from "../lib/db.js";
+import { MemoryGraph } from "../lib/graph.js";
+import { registerTools } from "../lib/tools.js";
+import { logger } from "../lib/logger.js";
 
 async function main(): Promise<void> {
   let database: Database | undefined;

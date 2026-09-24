@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
-import { Database } from "../dist/db.js";
-import { MemoryGraph } from "../dist/graph.js";
+import { Database } from "../dist/lib/db.js";
+import { MemoryGraph } from "../dist/lib/graph.js";
 
 const canRun = Boolean(
   process.env.NEO4J_PASSWORD && process.env.OPENROUTER_API_KEY,
