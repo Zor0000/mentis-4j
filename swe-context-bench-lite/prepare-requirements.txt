@@ -1,0 +1,2 @@
+# Parquet reader used only to prepare the pinned cohort, not by the evaluator.
+pyarrow==22.0.0

@@ -1,0 +1,17 @@
+ARG TASK_IMAGE=jiayuanz3/swecontextbench:sympy.sympy-21149
+FROM node:22.22.1-bookworm-slim AS build
+WORKDIR /mentis
+COPY package.json package-lock.json tsconfig.json ./
+COPY src ./src
+RUN npm ci --ignore-scripts \
+    && npm run build \
+    && npm prune --omit=dev --ignore-scripts \
+    && npm install --global @openai/codex@0.156.1
+
+FROM ${TASK_IMAGE}
+COPY --from=build /usr/local /usr/local
+COPY --from=build /mentis/dist /opt/mentis/dist
+COPY --from=build /mentis/node_modules /opt/mentis/node_modules
+COPY --from=build /mentis/package.json /opt/mentis/package.json
+WORKDIR /testbed
+ENTRYPOINT ["codex"]
