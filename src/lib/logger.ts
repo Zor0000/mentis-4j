@@ -10,9 +10,9 @@ function log(level: Level, message: string, requestId?: string): void {
       ? levels[configured as Level]
       : levels.debug;
   if (levels[level] < threshold) return;
-  process.stderr.write(
-    `${JSON.stringify({ level, message, ...(requestId ? { request_id: requestId } : {}) })}\n`,
-  );
+  const entry = `${JSON.stringify({ level, message, ...(requestId ? { request_id: requestId } : {}) })}\n`;
+  if (typeof process.stderr?.write === "function") process.stderr.write(entry);
+  else console.error(entry.trimEnd());
 }
 
 export const logger = {

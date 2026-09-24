@@ -8,8 +8,9 @@ export async function jevRelevance(
   query: string,
   attempt: AttemptRecord,
   requestId?: string,
+  configuredApiKey?: string,
 ): Promise<number> {
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  const apiKey = (configuredApiKey ?? process.env.OPENROUTER_API_KEY)?.trim();
   if (!apiKey) throw new Error("OPENROUTER_API_KEY is required");
 
   logger.debug("relevance request started", requestId);

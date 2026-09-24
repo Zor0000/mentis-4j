@@ -9,8 +9,9 @@ export async function embedText(
   text: string,
   inputType: EmbeddingInputType,
   requestId?: string,
+  configuredApiKey?: string,
 ): Promise<number[]> {
-  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
+  const apiKey = (configuredApiKey ?? process.env.OPENROUTER_API_KEY)?.trim();
   if (!apiKey) throw new Error("OPENROUTER_API_KEY is required");
 
   logger.debug(`embedding request started (${inputType})`, requestId);
