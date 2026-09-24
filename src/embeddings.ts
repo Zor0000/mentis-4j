@@ -1,3 +1,5 @@
+import { logger } from "./logger.js";
+
 export const EMBEDDING_MODEL = "voyageai/voyage-4";
 export const EMBEDDING_DIMENSIONS = 1024;
 
@@ -6,10 +8,12 @@ export type EmbeddingInputType = "document" | "query";
 export async function embedText(
   text: string,
   inputType: EmbeddingInputType,
+  requestId?: string,
 ): Promise<number[]> {
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   if (!apiKey) throw new Error("OPENROUTER_API_KEY is required");
 
+  logger.debug(`embedding request started (${inputType})`, requestId);
   const response = await fetch("https://openrouter.ai/api/v1/embeddings", {
     method: "POST",
     headers: {
@@ -22,7 +26,9 @@ export async function embedText(
       input_type: inputType,
     }),
   });
+
   if (!response.ok) {
+    logger.debug(`embedding request returned ${response.status}`, requestId);
     throw new Error(`OpenRouter embedding request failed (${response.status})`);
   }
 
@@ -30,6 +36,7 @@ export async function embedText(
   if (!isEmbeddingResponse(body)) {
     throw new Error("OpenRouter returned an invalid embedding response");
   }
+
   const embedding = body.data[0].embedding;
   if (
     embedding.length !== EMBEDDING_DIMENSIONS ||
@@ -39,6 +46,7 @@ export async function embedText(
       `OpenRouter returned an embedding with invalid dimensions (expected ${EMBEDDING_DIMENSIONS})`,
     );
   }
+  logger.debug("embedding request completed", requestId);
   return embedding;
 }
 

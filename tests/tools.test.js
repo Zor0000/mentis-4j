@@ -78,6 +78,12 @@ test(
       });
       assert.notEqual(searched.isError, true);
       const candidates = searched.structuredContent.candidates;
+      assert.ok(
+        candidates.every(
+          ({ relevanceScore }) =>
+            relevanceScore === null || Number.isFinite(relevanceScore),
+        ),
+      );
       assert.ok(candidates.some(({ taskId }) => taskId === shared.taskId));
       assert.equal(
         candidates.filter(({ taskId }) => taskId === shared.taskId).length,

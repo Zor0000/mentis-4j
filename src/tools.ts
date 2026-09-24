@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { logger } from "./logger.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { MemoryGraph } from "./graph.js";
@@ -19,8 +21,15 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
         .strict(),
     },
     async (input) => {
+      const requestId = randomUUID();
+      const started = Date.now();
+      logger.debug("search started", requestId);
       try {
-        const candidates = await graph.search(input);
+        const candidates = await graph.search(input, requestId);
+        logger.info(
+          `search completed: ${candidates.length} candidates in ${Date.now() - started}ms`,
+          requestId,
+        );
         return {
           structuredContent: { status: "ok", candidates },
           content: [
@@ -31,6 +40,10 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
           ],
         };
       } catch (error) {
+        logger.error(
+          `search failed after ${Date.now() - started}ms`,
+          requestId,
+        );
         throw new Error(`Failed to search memory: ${errorMessage(error)}`);
       }
     },
@@ -51,12 +64,23 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
         .strict(),
     },
     async (input) => {
+      const requestId = randomUUID();
+      const started = Date.now();
+      logger.debug("recall started", requestId);
       try {
-        const result = await graph.recall(input);
+        const result = await graph.recall(input, requestId);
+        logger.info(
+          `recall completed: ${result.rows.length} rows in ${Date.now() - started}ms`,
+          requestId,
+        );
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result) }],
         };
       } catch (error) {
+        logger.error(
+          `recall failed after ${Date.now() - started}ms`,
+          requestId,
+        );
         throw new Error(`Failed to recall memory: ${errorMessage(error)}`);
       }
     },
@@ -101,8 +125,15 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
         .strict(),
     },
     async (input) => {
+      const requestId = randomUUID();
+      const started = Date.now();
+      logger.debug("record_attempt started", requestId);
       try {
-        const attempt = await graph.recordAttempt(input);
+        const attempt = await graph.recordAttempt(input, requestId);
+        logger.info(
+          `record_attempt completed in ${Date.now() - started}ms`,
+          requestId,
+        );
         return {
           structuredContent: { status: "recorded", recorded: true, attempt },
           content: [
@@ -113,6 +144,10 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
           ],
         };
       } catch (error) {
+        logger.error(
+          `record_attempt failed after ${Date.now() - started}ms`,
+          requestId,
+        );
         throw new Error(`Failed to record attempt: ${errorMessage(error)}`);
       }
     },

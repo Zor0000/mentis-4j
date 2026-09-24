@@ -6,6 +6,8 @@ import {
   type EmbeddingInputType,
 } from "./embeddings.js";
 import type { Database } from "./db.js";
+import { jevRelevance } from "./jev.js";
+import { logger } from "./logger.js";
 
 export type CheckResult = "passed" | "failed";
 export type Verification = CheckResult | "unverified";
@@ -42,6 +44,7 @@ export interface SearchCandidate {
   taskId: string;
   matchedAttemptPreview: string;
   similarity: number;
+  relevanceScore: number | null;
 }
 
 export interface AttemptRecord {
@@ -100,6 +103,16 @@ const searchQuery = `
   MATCH (r:Repository {identity: t.repositoryIdentity})-[:HAS_TASK]->(t)
   RETURN r.identity AS repository,
          t.identity AS taskId,
+         node.id AS id,
+         node.codeContext AS codeContext,
+         node.action AS action,
+         node.affectedFiles AS affectedFiles,
+         node.observation AS observation,
+         node.inference AS inference,
+         node.checkMethod AS checkMethod,
+         node.checkResult AS checkResult,
+         node.evidenceReferences AS evidenceReferences,
+         node.recordedAt AS recordedAt,
          substring(trim(coalesce(node.action, '') + ' — ' + coalesce(node.observation, '')), 0, 240) AS matchedAttemptPreview,
          score AS similarity
   ORDER BY similarity DESC
@@ -107,83 +120,154 @@ const searchQuery = `
 
 const MAX_SEARCH_LIMIT = 20;
 
+interface SearchMatch {
+  candidate: SearchCandidate;
+  attempt: AttemptRecord;
+}
+
 export class MemoryGraph {
   constructor(
     private readonly database: Database,
     private readonly embed: (
       text: string,
       inputType: EmbeddingInputType,
+      requestId?: string,
     ) => Promise<number[]> = embedText,
+    private readonly relevance: typeof jevRelevance = jevRelevance,
   ) {}
 
-  async recordAttempt(input: RecordAttemptInput): Promise<AttemptRecord> {
+  async recordAttempt(
+    input: RecordAttemptInput,
+    requestId?: string,
+  ): Promise<AttemptRecord> {
     validateRecordAttempt(input);
-    const embedding = await this.embed(attemptEmbeddingText(input), "document");
+    const embedding = await this.embed(
+      attemptEmbeddingText(input),
+      "document",
+      requestId,
+    );
+    logger.debug("record_attempt embedding ready", requestId);
     validateEmbedding(embedding);
     const recordedAt = new Date().toISOString();
-    const result = await this.database.writeTx((transaction) =>
-      transaction.run(recordAttemptQuery, {
-        repository: input.repository,
-        taskId: input.taskId,
-        attemptId: randomUUID(),
-        codeContext: input.codeContext,
-        action: input.action,
-        affectedFiles: input.affectedFiles,
-        observation: input.observation,
-        inference: input.inference ?? null,
-        checkMethod: input.check?.method ?? null,
-        checkResult: input.check?.result ?? "unverified",
-        evidenceReferences: input.evidenceReferences ?? [],
-        embedding,
-        recordedAt,
-      }),
+    const result = await this.database.writeTx(
+      (transaction) =>
+        transaction.run(recordAttemptQuery, {
+          repository: input.repository,
+          taskId: input.taskId,
+          attemptId: randomUUID(),
+          codeContext: input.codeContext,
+          action: input.action,
+          affectedFiles: input.affectedFiles,
+          observation: input.observation,
+          inference: input.inference ?? null,
+          checkMethod: input.check?.method ?? null,
+          checkResult: input.check?.result ?? "unverified",
+          evidenceReferences: input.evidenceReferences ?? [],
+          embedding,
+          recordedAt,
+        }),
+      requestId,
     );
-
+    logger.debug("record_attempt written", requestId);
     return mapAttempt(result.records[0]);
   }
 
-  async search(input: SearchInput): Promise<SearchCandidate[]> {
+  async search(
+    input: SearchInput,
+    requestId?: string,
+  ): Promise<SearchCandidate[]> {
     const limit = input.limit ?? 10;
     validateSearch(input.query, limit);
-    const embedding = await this.embed(input.query, "query");
+    const embedding = await this.embed(input.query, "query", requestId);
+    logger.debug("search embedding ready", requestId);
     validateEmbedding(embedding);
-    return this.database.read(async (transaction) => {
-      let candidateLimit = Math.min(limit * 10, 100);
-      let candidates: SearchCandidate[] = [];
-      let hasMoreCandidates: boolean;
-      do {
-        const result = await transaction.run(searchQuery, {
-          embedding,
-          candidateLimit,
-        });
-        candidates = [];
-        const seen = new Set<string>();
-        for (const record of result.records) {
-          const candidate = {
-            repository: record.get("repository") as string,
-            taskId: record.get("taskId") as string,
-            matchedAttemptPreview: record.get(
-              "matchedAttemptPreview",
-            ) as string,
-            similarity: record.get("similarity") as number,
-          };
-          const key = JSON.stringify([candidate.repository, candidate.taskId]);
-          if (!seen.has(key)) {
-            seen.add(key);
-            candidates.push(candidate);
-            if (candidates.length === limit) return candidates;
+    const candidates = await this.database.read(
+      async (transaction) => {
+        let candidateLimit = Math.min(limit * 10, 100);
+        let matches: SearchMatch[] = [];
+        let hasMoreCandidates: boolean;
+        do {
+          const result = await transaction.run(searchQuery, {
+            embedding,
+            candidateLimit,
+          });
+          logger.debug(
+            `search fetched ${result.records.length} vector matches`,
+            requestId,
+          );
+          matches = [];
+          const seen = new Set<string>();
+          for (const record of result.records) {
+            const attempt = mapAttempt(record);
+            const candidate: SearchCandidate = {
+              repository: attempt.repository,
+              taskId: attempt.taskId,
+              matchedAttemptPreview: record.get(
+                "matchedAttemptPreview",
+              ) as string,
+              similarity: record.get("similarity") as number,
+              relevanceScore: null,
+            };
+            const key = JSON.stringify([
+              candidate.repository,
+              candidate.taskId,
+            ]);
+            if (!seen.has(key)) {
+              seen.add(key);
+              matches.push({ candidate, attempt });
+              if (matches.length === limit) return matches;
+            }
           }
-        }
-        hasMoreCandidates = result.records.length === candidateLimit;
-        candidateLimit *= 2;
-      } while (hasMoreCandidates);
-      return candidates;
-    });
+          hasMoreCandidates = result.records.length === candidateLimit;
+          candidateLimit *= 2;
+        } while (hasMoreCandidates);
+        return matches;
+      },
+      undefined,
+      requestId,
+    );
+
+    const vectorCandidates = candidates.map(({ candidate }) => candidate);
+    try {
+      const scored = await Promise.all(
+        candidates.map(async ({ candidate, attempt }) => ({
+          ...candidate,
+          relevanceScore: await this.relevance(input.query, attempt, requestId),
+        })),
+      );
+      return scored
+        .filter(
+          (
+            candidate,
+          ): candidate is SearchCandidate & {
+            relevanceScore: number;
+          } =>
+            candidate.relevanceScore !== null &&
+            candidate.relevanceScore >= 0.5,
+        )
+        .sort(
+          (a, b) =>
+            b.relevanceScore - a.relevanceScore || b.similarity - a.similarity,
+        );
+    } catch {
+      logger.info(
+        "search relevance unavailable; returning vector candidates",
+        requestId,
+      );
+      return vectorCandidates.map((candidate) => ({
+        ...candidate,
+        relevanceScore: null,
+      }));
+    }
   }
 
-  async recall(input: RecallInput) {
+  async recall(input: RecallInput, requestId?: string) {
     validateRecall(input);
-    return this.database.readCypher(input.cypher, input.parameters ?? {});
+    return this.database.readCypher(
+      input.cypher,
+      input.parameters ?? {},
+      requestId,
+    );
   }
 }
 

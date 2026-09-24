@@ -18,6 +18,41 @@ const attempt = {
   check: { method: "browser test", result: "failed" },
 };
 
+function searchRecord(candidate) {
+  const action =
+    candidate.action ?? candidate.matchedAttemptPreview ?? "action";
+  const observation = candidate.observation ?? "observation";
+  const values = {
+    repository: candidate.repository,
+    taskId: candidate.taskId,
+    id: candidate.id ?? `${candidate.taskId}-attempt`,
+    codeContext: candidate.codeContext ?? "test context",
+    action,
+    affectedFiles: candidate.affectedFiles ?? ["src/test.ts"],
+    observation,
+    inference: candidate.inference ?? null,
+    checkMethod: candidate.checkMethod ?? null,
+    checkResult: candidate.checkResult ?? "unverified",
+    evidenceReferences: candidate.evidenceReferences ?? [],
+    recordedAt: candidate.recordedAt ?? "2025-01-01T00:00:00.000Z",
+    matchedAttemptPreview:
+      candidate.matchedAttemptPreview ??
+      `${action} — ${observation}`.slice(0, 240),
+    similarity: candidate.similarity,
+  };
+  return { get: (key) => values[key] };
+}
+
+function graphForSearch(rows, relevance) {
+  const database = {
+    read: (work) =>
+      work({
+        run: async () => ({ records: rows.map(searchRecord) }),
+      }),
+  };
+  return new MemoryGraph(database, async () => embedding(), relevance);
+}
+
 test("an embedding failure never starts the attempt write", async () => {
   let writes = 0;
   const graph = new MemoryGraph({ writeTx: async () => writes++ }, async () => {
@@ -45,28 +80,34 @@ test("embeds the typed attempt as a document before writing it", async () => {
     recordedAt: "2025-01-01T00:00:00.000Z",
   };
   const database = {
-    writeTx: (work) =>
-      work({
+    writeTx: (work, requestId) => {
+      assert.equal(requestId, "request-1");
+      return work({
         run: async (_query, parameters) => {
           written = parameters;
           return { records: [{ get: (key) => values[key] }] };
         },
-      }),
+      });
+    },
   };
-  const graph = new MemoryGraph(database, async (text, inputType) => {
-    assert.equal(inputType, "document");
-    for (const field of [
-      "Action:",
-      "Observation:",
-      "Check:",
-      "Vite, local HTTP",
-    ]) {
-      assert.ok(text.includes(field));
-    }
-    return embedding();
-  });
+  const graph = new MemoryGraph(
+    database,
+    async (text, inputType, requestId) => {
+      assert.equal(requestId, "request-1");
+      assert.equal(inputType, "document");
+      for (const field of [
+        "Action:",
+        "Observation:",
+        "Check:",
+        "Vite, local HTTP",
+      ]) {
+        assert.ok(text.includes(field));
+      }
+      return embedding();
+    },
+  );
 
-  const recorded = await graph.recordAttempt(attempt);
+  const recorded = await graph.recordAttempt(attempt, "request-1");
   assert.equal(written.embedding.length, 1024);
   assert.equal(recorded.id, "attempt-id");
   assert.equal(recorded.verification, "failed");
@@ -102,12 +143,16 @@ test("search expands its attempt pool to fill the distinct task limit", async ()
           return {
             records: matches
               .slice(0, parameters.candidateLimit)
-              .map((values) => ({ get: (key) => values[key] })),
+              .map(searchRecord),
           };
         },
       }),
   };
-  const graph = new MemoryGraph(database, async () => embedding());
+  const graph = new MemoryGraph(
+    database,
+    async () => embedding(),
+    async () => 1,
+  );
 
   const candidates = await graph.search({ query: "test", limit: 10 });
 
@@ -122,6 +167,7 @@ test("search expands its attempt pool to fill the distinct task limit", async ()
     10,
   );
   assert.equal(candidates[0].taskId, "many-attempts");
+  assert.equal(candidates[0].relevanceScore, 1);
   assert.ok(
     candidates.some(
       ({ repository, taskId }) =>
@@ -129,6 +175,117 @@ test("search expands its attempt pool to fill the distinct task limit", async ()
     ),
   );
   assert.ok(candidates.some(({ taskId }) => taskId === "other-task-0"));
+});
+
+test("filters and ranks distinct tasks by Jev relevance", async () => {
+  const fullAction = "matched action ".repeat(30);
+  const rows = [
+    {
+      repository: attempt.repository,
+      taskId: "task-a",
+      id: "a-first",
+      action: fullAction,
+      similarity: 0.99,
+    },
+    {
+      repository: attempt.repository,
+      taskId: "task-a",
+      id: "a-duplicate",
+      action: "duplicate task action",
+      similarity: 0.98,
+    },
+    {
+      repository: attempt.repository,
+      taskId: "task-b",
+      id: "b",
+      similarity: 0.9,
+    },
+    {
+      repository: attempt.repository,
+      taskId: "task-c",
+      id: "c",
+      similarity: 0.8,
+    },
+    {
+      repository: attempt.repository,
+      taskId: "task-d",
+      id: "d",
+      similarity: 0.85,
+    },
+    {
+      repository: attempt.repository,
+      taskId: "task-e",
+      id: "e",
+      similarity: 0.7,
+    },
+  ];
+  const probabilities = { "a-first": 0.6, b: 0.5, c: 0.8, d: 0.8, e: 0.49 };
+  const scoredAttempts = [];
+  const graph = graphForSearch(rows, async (query, matchedAttempt) => {
+    assert.equal(query, "search query");
+    if (matchedAttempt.id === "a-first") {
+      assert.equal(matchedAttempt.action, fullAction);
+      assert.ok(matchedAttempt.action.length > 240);
+    }
+    scoredAttempts.push(matchedAttempt.id);
+    return probabilities[matchedAttempt.id];
+  });
+
+  const candidates = await graph.search({ query: "search query", limit: 10 });
+
+  assert.deepEqual(scoredAttempts, ["a-first", "b", "c", "d", "e"]);
+  assert.deepEqual(
+    candidates.map(({ taskId, relevanceScore }) => [taskId, relevanceScore]),
+    [
+      ["task-d", 0.8],
+      ["task-c", 0.8],
+      ["task-a", 0.6],
+      ["task-b", 0.5],
+    ],
+  );
+});
+
+test("empty vector results do not call Jev", async () => {
+  let relevanceCalls = 0;
+  const graph = graphForSearch([], async () => relevanceCalls++);
+
+  assert.deepEqual(await graph.search({ query: "no matches" }), []);
+  assert.equal(relevanceCalls, 0);
+});
+
+test("Jev failures return all vector candidates with null relevance scores", async () => {
+  const rows = [
+    {
+      repository: attempt.repository,
+      taskId: "task-a",
+      id: "a",
+      similarity: 0.9,
+    },
+    {
+      repository: attempt.repository,
+      taskId: "task-b",
+      id: "b",
+      similarity: 0.8,
+    },
+  ];
+  const graph = graphForSearch(rows, async (_query, matchedAttempt) => {
+    if (matchedAttempt.id === "b") throw new Error("invalid Jev response");
+    return 0.1;
+  });
+
+  const candidates = await graph.search({ query: "search query" });
+
+  assert.deepEqual(
+    candidates.map(({ taskId, similarity, relevanceScore }) => [
+      taskId,
+      similarity,
+      relevanceScore,
+    ]),
+    [
+      ["task-a", 0.9, null],
+      ["task-b", 0.8, null],
+    ],
+  );
 });
 
 test(
@@ -180,8 +337,10 @@ test(
       );
       assert.ok(
         candidates.every(
-          ({ matchedAttemptPreview, similarity }) =>
-            matchedAttemptPreview.length <= 240 && Number.isFinite(similarity),
+          ({ matchedAttemptPreview, similarity, relevanceScore }) =>
+            matchedAttemptPreview.length <= 240 &&
+            Number.isFinite(similarity) &&
+            (relevanceScore === null || Number.isFinite(relevanceScore)),
         ),
       );
 

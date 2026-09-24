@@ -9,7 +9,7 @@
     "lint": "eslint --ext .ts src",
     "format": "prettier --check 'src/**/*.ts' 'tests/**/*.js' package.json .eslintrc.json",
     "test": "npm run build && node --test tests/*.test.js",
-    "start": "node dist/server.js",
+    "start": "node --env-file-if-exists=.env dist/server.js",
     "prepare": "husky"
   },
   "dependencies": {

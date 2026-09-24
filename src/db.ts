@@ -1,3 +1,4 @@
+import { logger } from "./logger.js";
 import neo4j, {
   type Driver,
   type Integer,
@@ -54,15 +55,20 @@ export class Database {
 
   async verifyConnectivity(): Promise<void> {
     await this.driver.verifyConnectivity();
+    logger.debug("Neo4j connectivity verified");
   }
 
   async read<T>(
     work: TransactionWork<T>,
     config?: { timeout: number },
+    requestId?: string,
   ): Promise<T> {
+    logger.debug("Neo4j read started", requestId);
     const session = this.driver.session({ database: this.database });
     try {
-      return await session.executeRead(work, config);
+      const result = await session.executeRead(work, config);
+      logger.debug("Neo4j read completed", requestId);
+      return result;
     } finally {
       await session.close();
     }
@@ -71,6 +77,7 @@ export class Database {
   async readCypher(
     cypher: string,
     parameters: Record<string, unknown>,
+    requestId?: string,
   ): Promise<ReadQueryResult> {
     if ("__mentisRowLimit" in parameters) {
       throw new Error("parameter name __mentisRowLimit is reserved");
@@ -139,13 +146,17 @@ export class Database {
           });
         }),
       { timeout: READ_TIMEOUT_MS },
+      requestId,
     );
   }
 
-  async writeTx<T>(work: TransactionWork<T>): Promise<T> {
+  async writeTx<T>(work: TransactionWork<T>, requestId?: string): Promise<T> {
+    logger.debug("Neo4j write started", requestId);
     const session = this.driver.session({ database: this.database });
     try {
-      return await session.executeWrite(work);
+      const result = await session.executeWrite(work);
+      logger.debug("Neo4j write completed", requestId);
+      return result;
     } finally {
       await session.close();
     }
@@ -153,6 +164,7 @@ export class Database {
 
   async close(): Promise<void> {
     await this.driver.close();
+    logger.debug("Neo4j connection closed");
   }
 }
 
