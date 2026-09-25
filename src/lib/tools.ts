@@ -7,13 +7,14 @@ import type { MemoryGraph } from "./graph.js";
 
 const text = z.string().trim().min(1);
 const files = z.array(text).min(1);
+const gitCommit = text.regex(/^[\da-f]{4,64}$/i);
 
 export function registerTools(server: McpServer, graph: MemoryGraph): void {
   server.registerTool(
     "search",
     {
       description:
-        "Find candidate tasks by semantic similarity. Returns at most limit distinct tasks, not limit vector matches. Each task previews a matched attempt; similarity is not a success rating. Inspect full histories with recall before reusing anything.",
+        "Find candidate tasks by semantic similarity. Returns at most limit distinct tasks, not limit vector matches. Each task identifies its matched attempt and exposes its recorded Git state and outdated status. A passed check is evidence only about that attempt's recorded code state, not verification of the current checkout. Similarity is not a success rating; inspect full histories with recall before reusing anything.",
       inputSchema: z
         .object({
           query: text
@@ -101,7 +102,7 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
     "record_attempt",
     {
       description:
-        "Record one task-scoped action and its observation. Inference is separate; omit check when none ran (unverified).",
+        "Record one task-scoped action and its observation. Inference is separate; omit check when none ran (unverified). Git state is agent-reported, not detected by the server.",
       inputSchema: z
         .object({
           repository: text.describe(
@@ -111,7 +112,7 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
             "Identity of this investigation, not a symptom shared by tasks",
           ),
           codeContext: text.describe(
-            "Revision, framework, or working-tree state when the action occurred",
+            "Framework, environment, or other code context when the action occurred",
           ),
           action: text,
           affectedFiles: files,
@@ -132,6 +133,13 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
             .optional()
             .describe("Revisable interpretation, distinct from observation"),
           evidenceReferences: z.array(text).optional(),
+          gitCommit: gitCommit
+            .optional()
+            .describe("Agent-reported Git commit SHA when the action occurred"),
+          gitDirty: z
+            .boolean()
+            .optional()
+            .describe("Whether the working tree had uncommitted changes"),
         })
         .strict(),
     },
@@ -160,6 +168,79 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
           requestId,
         );
         throw new Error(`Failed to record attempt: ${errorMessage(error)}`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "mark_conclusion_outdated",
+    {
+      description:
+        "Mark one attempt's inference outdated without changing or removing its action, observation, inference, or check. The correction is scoped to that repository and attempt.",
+      inputSchema: z
+        .object({
+          repository: text,
+          attemptId: text,
+          reason: text.describe("Why the conclusion no longer applies"),
+          latestCommit: gitCommit
+            .optional()
+            .describe("Agent-reported latest Git commit when marking outdated"),
+        })
+        .strict(),
+    },
+    async (input) => {
+      const requestId = randomUUID();
+      try {
+        const attempt = await graph.markConclusionOutdated(input, requestId);
+        return {
+          structuredContent: {
+            status: "marked_outdated",
+            attemptId: attempt.id,
+            outdated: attempt.outdated,
+          },
+          content: [
+            {
+              type: "text" as const,
+              text: `Marked conclusion for attempt ${attempt.id} outdated. Original attempt evidence remains available.`,
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("mark_conclusion_outdated failed", requestId);
+        throw new Error(
+          `Failed to mark conclusion outdated: ${errorMessage(error)}`,
+        );
+      }
+    },
+  );
+
+  server.registerTool(
+    "forget_attempt",
+    {
+      description:
+        "Permanently remove one attempt and its embedding from the live graph, scoped to a repository. Other attempts remain. This cannot retract prior responses or backups.",
+      inputSchema: z.object({ repository: text, attemptId: text }).strict(),
+    },
+    async (input) => {
+      const requestId = randomUUID();
+      try {
+        await graph.forgetAttempt(input, requestId);
+        return {
+          structuredContent: {
+            status: "forgotten",
+            forgotten: true,
+            attemptId: input.attemptId,
+          },
+          content: [
+            {
+              type: "text" as const,
+              text: `Forgot attempt ${input.attemptId} from the live graph.`,
+            },
+          ],
+        };
+      } catch (error) {
+        logger.error("forget_attempt failed", requestId);
+        throw new Error(`Failed to forget attempt: ${errorMessage(error)}`);
       }
     },
   );

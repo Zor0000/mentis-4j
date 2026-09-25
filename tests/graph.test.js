@@ -16,6 +16,8 @@ const attempt = {
   affectedFiles: ["src/Login.tsx"],
   observation: "Login returns to the sign-in page",
   check: { method: "browser test", result: "failed" },
+  gitCommit: "a8c3f2",
+  gitDirty: true,
 };
 
 function searchRecord(candidate) {
@@ -35,6 +37,11 @@ function searchRecord(candidate) {
     checkResult: candidate.checkResult ?? "unverified",
     evidenceReferences: candidate.evidenceReferences ?? [],
     recordedAt: candidate.recordedAt ?? "2025-01-01T00:00:00.000Z",
+    gitCommit: candidate.gitCommit ?? null,
+    gitDirty: candidate.gitDirty ?? null,
+    outdatedReason: candidate.outdated?.reason ?? null,
+    outdatedAt: candidate.outdated?.correctedAt ?? null,
+    latestCommit: candidate.outdated?.latestCommit ?? null,
     matchedAttemptPreview:
       candidate.matchedAttemptPreview ??
       `${action} — ${observation}`.slice(0, 240),
@@ -63,6 +70,23 @@ test("an embedding failure never starts the attempt write", async () => {
   assert.equal(writes, 0);
 });
 
+test("rejects a non-SHA Git commit before embedding", async () => {
+  let embeddings = 0;
+  const graph = new MemoryGraph(
+    { writeTx: async () => assert.fail("must not write") },
+    async () => {
+      embeddings++;
+      return embedding();
+    },
+  );
+
+  await assert.rejects(
+    graph.recordAttempt({ ...attempt, gitCommit: "not-a-commit" }),
+    /hexadecimal Git commit SHA/,
+  );
+  assert.equal(embeddings, 0);
+});
+
 test("embeds the typed attempt as a document before writing it", async () => {
   let written;
   const values = {
@@ -78,6 +102,8 @@ test("embeds the typed attempt as a document before writing it", async () => {
     checkResult: attempt.check.result,
     evidenceReferences: [],
     recordedAt: "2025-01-01T00:00:00.000Z",
+    gitCommit: attempt.gitCommit,
+    gitDirty: attempt.gitDirty,
   };
   const database = {
     writeTx: (work, requestId) => {
@@ -103,14 +129,139 @@ test("embeds the typed attempt as a document before writing it", async () => {
       ]) {
         assert.ok(text.includes(field));
       }
+      assert.equal(text.includes(attempt.gitCommit), false);
       return embedding();
     },
   );
 
   const recorded = await graph.recordAttempt(attempt, "request-1");
   assert.equal(written.embedding.length, 1024);
+  assert.equal(written.gitCommit, attempt.gitCommit);
+  assert.equal(written.gitDirty, true);
   assert.equal(recorded.id, "attempt-id");
   assert.equal(recorded.verification, "failed");
+  assert.equal(recorded.gitCommit, attempt.gitCommit);
+  assert.equal(recorded.gitDirty, true);
+});
+
+test("search exposes the matched attempt's Git and outdated status", async () => {
+  const graph = graphForSearch(
+    [
+      {
+        repository: "repo",
+        taskId: "task",
+        id: "attempt-1",
+        action: "Keep cookie auth",
+        checkResult: "passed",
+        gitCommit: "a8c3f2",
+        gitDirty: true,
+        outdated: {
+          reason: "Header auth replaced this path",
+          correctedAt: "2025-02-01T00:00:00.000Z",
+          latestCommit: "b7d9e1",
+        },
+        similarity: 0.9,
+      },
+    ],
+    async () => 1,
+  );
+
+  assert.deepEqual(await graph.search({ query: "cookie auth" }), [
+    {
+      repository: "repo",
+      taskId: "task",
+      matchedAttemptId: "attempt-1",
+      matchedAttemptPreview: "Keep cookie auth — observation",
+      matchedAttemptVerification: "passed",
+      gitCommit: "a8c3f2",
+      gitDirty: true,
+      outdated: {
+        reason: "Header auth replaced this path",
+        correctedAt: "2025-02-01T00:00:00.000Z",
+        latestCommit: "b7d9e1",
+      },
+      similarity: 0.9,
+      relevanceScore: 1,
+    },
+  ]);
+});
+
+test("marks an attempt outdated without changing its original evidence", async () => {
+  let query;
+  let parameters;
+  const original = {
+    repository: attempt.repository,
+    taskId: attempt.taskId,
+    id: "attempt-1",
+    action: attempt.action,
+    observation: attempt.observation,
+    inference: "Cookie persistence fixes sign-in",
+    checkMethod: "browser test",
+    checkResult: "passed",
+    gitCommit: attempt.gitCommit,
+    gitDirty: true,
+    outdated: {
+      reason: "Header auth replaced cookie auth",
+      correctedAt: "2025-02-01T00:00:00.000Z",
+      latestCommit: "b7d9e1",
+    },
+  };
+  const graph = new MemoryGraph({
+    writeTx: (work) =>
+      work({
+        run: async (statement, values) => {
+          query = statement;
+          parameters = values;
+          return { records: [searchRecord(original)] };
+        },
+      }),
+  });
+
+  const marked = await graph.markConclusionOutdated({
+    repository: attempt.repository,
+    attemptId: "attempt-1",
+    reason: original.outdated.reason,
+    latestCommit: original.outdated.latestCommit,
+  });
+
+  assert.match(query, /Repository \{identity: \$repository\}/);
+  assert.match(query, /a\.outdatedReason = \$reason/);
+  assert.match(
+    query,
+    /a\.latestCommit = coalesce\(\$latestCommit, a\.latestCommit, a\.outdatedGitCommit\)/,
+  );
+  assert.match(query, /REMOVE a\.outdatedGitCommit/);
+  assert.equal(parameters.repository, attempt.repository);
+  assert.equal(parameters.attemptId, "attempt-1");
+  assert.equal(parameters.latestCommit, "b7d9e1");
+  assert.equal(marked.inference, original.inference);
+  assert.deepEqual(marked.check, {
+    method: "browser test",
+    result: "passed",
+  });
+  assert.equal(marked.outdated.reason, original.outdated.reason);
+  assert.equal(Number.isNaN(Date.parse(marked.outdated.correctedAt)), false);
+});
+
+test("forgets only an attempt scoped to its repository", async () => {
+  let query;
+  let parameters;
+  const graph = new MemoryGraph({
+    writeTx: (work) =>
+      work({
+        run: async (statement, values) => {
+          query = statement;
+          parameters = values;
+          return { records: [{ get: () => ({ toNumber: () => 1 }) }] };
+        },
+      }),
+  });
+
+  await graph.forgetAttempt({ repository: "repo", attemptId: "attempt-2" });
+
+  assert.match(query, /Repository \{identity: \$repository\}/);
+  assert.match(query, /DETACH DELETE a/);
+  assert.deepEqual(parameters, { repository: "repo", attemptId: "attempt-2" });
 });
 
 test("search uses a bounded vector pool without stopping at the task limit", async () => {
@@ -318,7 +469,10 @@ test("search scores up to five attempts per task and selects its most useful mat
     {
       repository: attempt.repository,
       taskId: "resolved",
+      matchedAttemptId: "passed",
       matchedAttemptPreview: "verified fix",
+      matchedAttemptVerification: "unverified",
+      outdated: null,
       similarity: 0.97,
       relevanceScore: 0.74,
     },
@@ -391,13 +545,14 @@ test(
 
     try {
       await database.verifyConnectivity();
-      await graph.recordAttempt({
+      const original = await graph.recordAttempt({
         ...shared,
         action: "Change the login redirect",
         observation: "Authentication still cycles back to the sign-in page",
+        inference: "The cookie redirect path causes the login loop",
         check: { method: "browser test", result: "failed" },
       });
-      await graph.recordAttempt({
+      const forgotten = await graph.recordAttempt({
         ...shared,
         action: "Retain the session cookie over local HTTP",
         observation: "The browser stays signed in after login",
@@ -411,6 +566,37 @@ test(
         observation: "The user is sent back to sign-in after authenticating",
       });
 
+      const historyBefore = await graph.recall({
+        cypher: `MATCH (t:Task {identity: $taskId, repositoryIdentity: $repository})-[:HAS_ATTEMPT]->(a:Attempt)
+                 RETURN a.id AS id ORDER BY a.recordedAt`,
+        parameters: { taskId: shared.taskId, repository },
+      });
+      assert.equal(historyBefore.rows.length, 2);
+
+      const corrected = await graph.markConclusionOutdated({
+        repository,
+        attemptId: original.id,
+        reason: "Header-based auth replaced the cookie path",
+        latestCommit: "b7d9e1",
+      });
+      assert.equal(corrected.verification, "failed");
+      assert.equal(
+        corrected.inference,
+        "The cookie redirect path causes the login loop",
+      );
+      assert.equal(corrected.outdated.latestCommit, "b7d9e1");
+      const updated = await graph.markConclusionOutdated({
+        repository,
+        attemptId: original.id,
+        reason: "New evidence confirms the old conclusion is outdated",
+      });
+      assert.equal(updated.outdated.latestCommit, "b7d9e1");
+      assert.equal(
+        updated.outdated.reason,
+        "New evidence confirms the old conclusion is outdated",
+      );
+      await graph.forgetAttempt({ repository, attemptId: forgotten.id });
+
       const candidates = await graph.search({
         query:
           "users are repeatedly returned to the login screen after signing in",
@@ -423,7 +609,13 @@ test(
       );
       assert.ok(
         candidates.every(
-          ({ matchedAttemptPreview, similarity, relevanceScore }) =>
+          ({
+            matchedAttemptId,
+            matchedAttemptPreview,
+            similarity,
+            relevanceScore,
+          }) =>
+            matchedAttemptId !== forgotten.id &&
             matchedAttemptPreview.length <= 240 &&
             Number.isFinite(similarity) &&
             (relevanceScore === null || Number.isFinite(relevanceScore)),
@@ -432,16 +624,47 @@ test(
 
       const history = await graph.recall({
         cypher: `MATCH (t:Task {identity: $taskId, repositoryIdentity: $repository})-[:HAS_ATTEMPT]->(a:Attempt)
-                 RETURN t.identity AS taskId, a.action AS action, a.checkResult AS result
+                 RETURN t.identity AS taskId, a.id AS id, a.action AS action,
+                        a.inference AS inference, a.checkResult AS result,
+                        a.gitCommit AS gitCommit, a.gitDirty AS gitDirty,
+                        a.outdatedReason AS outdatedReason, a.outdatedAt AS outdatedAt,
+                        a.latestCommit AS latestCommit
                  ORDER BY a.recordedAt`,
         parameters: { taskId: shared.taskId, repository },
       });
-      assert.deepEqual(history.columns, ["taskId", "action", "result"]);
-      assert.equal(history.rows.length, 2);
-      assert.deepEqual(history.rows.map((row) => row[2]).sort(), [
-        "failed",
-        "passed",
+      assert.deepEqual(history.columns, [
+        "taskId",
+        "id",
+        "action",
+        "inference",
+        "result",
+        "gitCommit",
+        "gitDirty",
+        "outdatedReason",
+        "outdatedAt",
+        "latestCommit",
       ]);
+      assert.equal(history.rows.length, 1);
+      assert.equal(history.rows[0][1], original.id);
+      assert.equal(
+        history.rows[0][3],
+        "The cookie redirect path causes the login loop",
+      );
+      assert.equal(history.rows[0][4], "failed");
+      assert.equal(history.rows[0][5], "a8c3f2");
+      assert.equal(history.rows[0][6], true);
+      assert.equal(
+        history.rows[0][7],
+        "New evidence confirms the old conclusion is outdated",
+      );
+      assert.equal(history.rows[0][8], updated.outdated.correctedAt);
+      assert.equal(history.rows[0][9], "b7d9e1");
+
+      const deleted = await graph.recall({
+        cypher: "MATCH (a:Attempt {id: $attemptId}) RETURN a.id AS id",
+        parameters: { attemptId: forgotten.id },
+      });
+      assert.deepEqual(deleted.rows, []);
 
       const separateHistory = await graph.recall({
         cypher: `MATCH (t:Task {identity: $taskId, repositoryIdentity: $repository})-[:HAS_ATTEMPT]->(a:Attempt)

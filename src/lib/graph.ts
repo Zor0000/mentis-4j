@@ -24,6 +24,26 @@ export interface RecordAttemptInput {
   check?: CheckInput;
   inference?: string;
   evidenceReferences?: string[];
+  gitCommit?: string;
+  gitDirty?: boolean;
+}
+
+export interface MarkConclusionOutdatedInput {
+  repository: string;
+  attemptId: string;
+  reason: string;
+  latestCommit?: string;
+}
+
+export interface ForgetAttemptInput {
+  repository: string;
+  attemptId: string;
+}
+
+export interface ConclusionCorrection {
+  reason: string;
+  correctedAt: string;
+  latestCommit?: string;
 }
 
 export interface RecallInput {
@@ -39,7 +59,12 @@ export interface SearchInput {
 export interface SearchCandidate {
   repository: string;
   taskId: string;
+  matchedAttemptId: string;
   matchedAttemptPreview: string;
+  matchedAttemptVerification: Verification;
+  gitCommit?: string;
+  gitDirty?: boolean;
+  outdated: ConclusionCorrection | null;
   similarity: number;
   relevanceScore: number | null;
 }
@@ -57,6 +82,9 @@ export interface AttemptRecord {
   verification: Verification;
   evidenceReferences: string[];
   recordedAt: string;
+  gitCommit?: string;
+  gitDirty?: boolean;
+  outdated?: ConclusionCorrection;
 }
 
 const recordAttemptQuery = `
@@ -77,7 +105,9 @@ const recordAttemptQuery = `
   SET a.inference = $inference,
       a.checkMethod = $checkMethod,
       a.checkResult = $checkResult,
-      a.evidenceReferences = $evidenceReferences
+      a.evidenceReferences = $evidenceReferences,
+      a.gitCommit = $gitCommit,
+      a.gitDirty = $gitDirty
   CREATE (t)-[:HAS_ATTEMPT]->(a)
   RETURN r.identity AS repository,
          t.identity AS taskId,
@@ -90,7 +120,44 @@ const recordAttemptQuery = `
          a.checkMethod AS checkMethod,
          a.checkResult AS checkResult,
          a.evidenceReferences AS evidenceReferences,
-         a.recordedAt AS recordedAt
+         a.recordedAt AS recordedAt,
+         a.gitCommit AS gitCommit,
+         a.gitDirty AS gitDirty,
+         a.outdatedReason AS outdatedReason,
+         a.outdatedAt AS outdatedAt,
+         coalesce(a.latestCommit, a.outdatedGitCommit) AS latestCommit
+`;
+
+const markConclusionOutdatedQuery = `
+  MATCH (:Repository {identity: $repository})-[:HAS_TASK]->(t:Task)-[:HAS_ATTEMPT]->(a:Attempt {id: $attemptId})
+  SET a.outdatedReason = $reason,
+      a.outdatedAt = $correctedAt,
+      a.latestCommit = coalesce($latestCommit, a.latestCommit, a.outdatedGitCommit)
+  REMOVE a.outdatedGitCommit
+  RETURN a.id AS id,
+         t.identity AS taskId,
+         $repository AS repository,
+         a.codeContext AS codeContext,
+         a.action AS action,
+         a.affectedFiles AS affectedFiles,
+         a.observation AS observation,
+         a.inference AS inference,
+         a.checkMethod AS checkMethod,
+         a.checkResult AS checkResult,
+         a.evidenceReferences AS evidenceReferences,
+         a.recordedAt AS recordedAt,
+         a.gitCommit AS gitCommit,
+         a.gitDirty AS gitDirty,
+         a.outdatedReason AS outdatedReason,
+         a.outdatedAt AS outdatedAt,
+         coalesce(a.latestCommit, a.outdatedGitCommit) AS latestCommit
+`;
+
+const forgetAttemptQuery = `
+  MATCH (:Repository {identity: $repository})-[:HAS_TASK]->(:Task)-[:HAS_ATTEMPT]->(a:Attempt {id: $attemptId})
+  WITH a LIMIT 1
+  DETACH DELETE a
+  RETURN true AS deleted
 `;
 
 const searchQuery = `
@@ -110,6 +177,11 @@ const searchQuery = `
          node.checkResult AS checkResult,
          node.evidenceReferences AS evidenceReferences,
          node.recordedAt AS recordedAt,
+         node.gitCommit AS gitCommit,
+         node.gitDirty AS gitDirty,
+         node.outdatedReason AS outdatedReason,
+         node.outdatedAt AS outdatedAt,
+         coalesce(node.latestCommit, node.outdatedGitCommit) AS latestCommit,
          substring(trim(coalesce(node.action, '') + ' — ' + coalesce(node.observation, '')), 0, ${CONFIG.search.previewLength}) AS matchedAttemptPreview,
          score AS similarity
   ORDER BY similarity DESC
@@ -158,6 +230,8 @@ export class MemoryGraph {
           checkMethod: input.check?.method ?? null,
           checkResult: input.check?.result ?? "unverified",
           evidenceReferences: input.evidenceReferences ?? [],
+          gitCommit: input.gitCommit ?? null,
+          gitDirty: input.gitDirty ?? null,
           embedding,
           recordedAt,
         }),
@@ -165,6 +239,43 @@ export class MemoryGraph {
     );
     logger.debug("record_attempt written", requestId);
     return mapAttempt(result.records[0]);
+  }
+
+  async markConclusionOutdated(
+    input: MarkConclusionOutdatedInput,
+    requestId?: string,
+  ): Promise<AttemptRecord> {
+    validateMarkConclusionOutdated(input);
+    const correctedAt = new Date().toISOString();
+    const result = await this.database.writeTx(
+      (transaction) =>
+        transaction.run(markConclusionOutdatedQuery, {
+          repository: input.repository,
+          attemptId: input.attemptId,
+          reason: input.reason,
+          correctedAt,
+          latestCommit: input.latestCommit ?? null,
+        }),
+      requestId,
+    );
+    if (result.records.length === 0) {
+      throw new Error("Attempt not found in repository");
+    }
+    return mapAttempt(result.records[0]);
+  }
+
+  async forgetAttempt(
+    input: ForgetAttemptInput,
+    requestId?: string,
+  ): Promise<void> {
+    validateForgetAttempt(input);
+    const result = await this.database.writeTx(
+      (transaction) => transaction.run(forgetAttemptQuery, input),
+      requestId,
+    );
+    if (result.records.length === 0) {
+      throw new Error("Attempt not found in repository");
+    }
   }
 
   async search(
@@ -197,9 +308,18 @@ export class MemoryGraph {
             candidate: {
               repository: attempt.repository,
               taskId: attempt.taskId,
+              matchedAttemptId: attempt.id,
               matchedAttemptPreview: record.get(
                 "matchedAttemptPreview",
               ) as string,
+              matchedAttemptVerification: attempt.verification,
+              ...(attempt.gitCommit === undefined
+                ? {}
+                : { gitCommit: attempt.gitCommit }),
+              ...(attempt.gitDirty === undefined
+                ? {}
+                : { gitDirty: attempt.gitDirty }),
+              outdated: attempt.outdated ?? null,
               similarity: record.get("similarity") as number,
               relevanceScore: null,
             },
@@ -306,6 +426,24 @@ function validateRecordAttempt(input: RecordAttemptInput): void {
   if (input.inference !== undefined) requireText(input.inference);
   if (input.evidenceReferences !== undefined)
     requireTextList(input.evidenceReferences, true);
+  if (input.gitCommit !== undefined) requireGitCommit(input.gitCommit);
+  if (input.gitDirty !== undefined && typeof input.gitDirty !== "boolean") {
+    throw new Error("gitDirty must be a boolean");
+  }
+}
+
+function validateMarkConclusionOutdated(
+  input: MarkConclusionOutdatedInput,
+): void {
+  requireText(input.repository);
+  requireText(input.attemptId);
+  requireText(input.reason);
+  if (input.latestCommit !== undefined) requireGitCommit(input.latestCommit);
+}
+
+function validateForgetAttempt(input: ForgetAttemptInput): void {
+  requireText(input.repository);
+  requireText(input.attemptId);
 }
 
 function validateSearch(query: string, limit: number): void {
@@ -365,6 +503,12 @@ function requireTextList(values: string[], allowEmpty = false): void {
   for (const value of values) requireText(value);
 }
 
+function requireGitCommit(value: string): void {
+  if (!/^[\da-f]{4,64}$/i.test(value)) {
+    throw new Error("gitCommit must be a hexadecimal Git commit SHA");
+  }
+}
+
 function mapAttempt(record: Neo4jRecord): AttemptRecord {
   const checkMethod = record.get("checkMethod") as string | null;
   const checkResult = record.get("checkResult") as Verification;
@@ -376,6 +520,7 @@ function mapAttempt(record: Neo4jRecord): AttemptRecord {
     throw new Error("Neo4j returned an invalid check result");
   }
 
+  const outdated = mapCorrection(record);
   return {
     id: record.get("id") as string,
     repository: record.get("repository") as string,
@@ -384,14 +529,33 @@ function mapAttempt(record: Neo4jRecord): AttemptRecord {
     action: record.get("action") as string,
     affectedFiles: record.get("affectedFiles") as string[],
     observation: record.get("observation") as string,
-    ...(record.get("inference") === null
+    ...(record.get("inference") == null
       ? {}
       : { inference: record.get("inference") as string }),
-    ...(checkMethod === null
+    ...(checkMethod == null
       ? {}
       : { check: { method: checkMethod, result: checkResult as CheckResult } }),
     verification: checkResult,
     evidenceReferences: record.get("evidenceReferences") as string[],
     recordedAt: record.get("recordedAt") as string,
+    ...(record.get("gitCommit") == null
+      ? {}
+      : { gitCommit: record.get("gitCommit") as string }),
+    ...(record.get("gitDirty") == null
+      ? {}
+      : { gitDirty: record.get("gitDirty") as boolean }),
+    ...(outdated ? { outdated } : {}),
+  };
+}
+
+function mapCorrection(record: Neo4jRecord): ConclusionCorrection | undefined {
+  const reason = record.get("outdatedReason") as string | null;
+  const correctedAt = record.get("outdatedAt") as string | null;
+  if (reason == null || correctedAt == null) return undefined;
+  const latestCommit = record.get("latestCommit") as string | null;
+  return {
+    reason,
+    correctedAt,
+    ...(latestCommit == null ? {} : { latestCommit }),
   };
 }

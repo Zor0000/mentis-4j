@@ -3,10 +3,55 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { registerTools } from "../dist/lib/tools.js";
 
 const canRun = Boolean(
   process.env.NEO4J_PASSWORD && process.env.OPENROUTER_API_KEY,
 );
+
+test("registers and dispatches attempt correction and deletion tools", async () => {
+  const handlers = {};
+  const correction = {
+    reason: "Header auth replaced this path",
+    correctedAt: "2025-02-01T00:00:00.000Z",
+    latestCommit: "b7d9e1",
+  };
+  const graph = {
+    markConclusionOutdated: async (input) => ({
+      id: input.attemptId,
+      outdated: correction,
+    }),
+    forgetAttempt: async (input) => {
+      assert.deepEqual(input, { repository: "repo", attemptId: "attempt-1" });
+    },
+  };
+  registerTools(
+    { registerTool: (name, _config, handler) => (handlers[name] = handler) },
+    graph,
+  );
+
+  assert.deepEqual(Object.keys(handlers).sort(), [
+    "forget_attempt",
+    "mark_conclusion_outdated",
+    "recall",
+    "record_attempt",
+    "search",
+  ]);
+  const marked = await handlers.mark_conclusion_outdated({
+    repository: "repo",
+    attemptId: "attempt-1",
+    reason: correction.reason,
+    latestCommit: correction.latestCommit,
+  });
+  assert.equal(marked.structuredContent.status, "marked_outdated");
+  assert.deepEqual(marked.structuredContent.outdated, correction);
+
+  const forgotten = await handlers.forget_attempt({
+    repository: "repo",
+    attemptId: "attempt-1",
+  });
+  assert.equal(forgotten.structuredContent.forgotten, true);
+});
 
 test(
   "stdio tools search tasks, record attempts, and run agent-authored recall",
@@ -24,6 +69,7 @@ test(
       },
     });
     const repository = `mcp-test-${randomUUID()}`;
+    const attemptIds = [];
     const shared = {
       repository,
       taskId: "login-cookie-investigation",
@@ -35,6 +81,8 @@ test(
       await client.connect(transport);
       const { tools } = await client.listTools();
       assert.deepEqual(tools.map(({ name }) => name).sort(), [
+        "forget_attempt",
+        "mark_conclusion_outdated",
         "recall",
         "record_attempt",
         "search",
@@ -45,7 +93,10 @@ test(
           ...shared,
           action: "Change the login redirect",
           observation: "Authentication still returns to the sign-in page",
+          inference: "Cookie auth handles this route",
           check: { method: "browser test", result: "failed" },
+          gitCommit: "a8c3f2",
+          gitDirty: true,
         },
         {
           ...shared,
@@ -67,7 +118,24 @@ test(
         assert.notEqual(recorded.isError, true);
         assert.equal(recorded.structuredContent.status, "recorded");
         assert.equal(recorded.structuredContent.recorded, true);
+        attemptIds.push(recorded.structuredContent.attempt.id);
       }
+
+      const marked = await client.callTool({
+        name: "mark_conclusion_outdated",
+        arguments: {
+          repository,
+          attemptId: attemptIds[0],
+          reason: "Header-based auth replaced the cookie path",
+          latestCommit: "b7d9e1",
+        },
+      });
+      assert.notEqual(marked.isError, true);
+      assert.equal(marked.structuredContent.status, "marked_outdated");
+      assert.equal(
+        marked.structuredContent.outdated.reason,
+        "Header-based auth replaced the cookie path",
+      );
 
       const searched = await client.callTool({
         name: "search",
@@ -90,11 +158,27 @@ test(
         1,
       );
 
+      assert.ok(
+        candidates.every(
+          ({ matchedAttemptId, outdated }) =>
+            typeof matchedAttemptId === "string" &&
+            (outdated === null || typeof outdated.reason === "string"),
+        ),
+      );
+
+      const forgotten = await client.callTool({
+        name: "forget_attempt",
+        arguments: { repository, attemptId: attemptIds[1] },
+      });
+      assert.notEqual(forgotten.isError, true);
+      assert.equal(forgotten.structuredContent.forgotten, true);
+
       const recalled = await client.callTool({
         name: "recall",
         arguments: {
           cypher: `MATCH (t:Task {identity: $taskId, repositoryIdentity: $repository})-[:HAS_ATTEMPT]->(a:Attempt)
-                   RETURN t.identity AS taskId, a.action AS action, a.checkResult AS result
+                   RETURN t.identity AS taskId, a.action AS action, a.checkResult AS result,
+                          a.inference AS inference, a.outdatedReason AS outdatedReason
                    ORDER BY a.recordedAt`,
           parameters: { taskId: shared.taskId, repository },
         },
@@ -109,11 +193,20 @@ test(
         "truncated",
         "truncationReason",
       ]);
-      assert.deepEqual(recalledJson.columns, ["taskId", "action", "result"]);
-      assert.deepEqual(recalledJson.rows.map((row) => row[2]).sort(), [
-        "failed",
-        "passed",
+      assert.deepEqual(recalledJson.columns, [
+        "taskId",
+        "action",
+        "result",
+        "inference",
+        "outdatedReason",
       ]);
+      assert.equal(recalledJson.rows.length, 1);
+      assert.equal(recalledJson.rows[0][2], "failed");
+      assert.equal(recalledJson.rows[0][3], "Cookie auth handles this route");
+      assert.equal(
+        recalledJson.rows[0][4],
+        "Header-based auth replaced the cookie path",
+      );
       assert.equal(recalledJson.truncated, false);
       assert.equal(recalledJson.truncationReason, null);
 
