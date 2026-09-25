@@ -4,11 +4,4 @@
   "main": "src/server/worker.ts",
   "compatibility_date": "2025-03-01",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
-  "kv_namespaces": [
-    {
-      "binding": "OAUTH_KV",
-      // Replace with the namespace ID created for this Worker before deploy.
-      "id": "00000000000000000000000000000000",
-    },
-  ],
 }

@@ -1,7 +1,8 @@
+import { CONFIG, getOpenRouterApiKey } from "../config/config.js";
 import { logger } from "./logger.js";
 
-export const EMBEDDING_MODEL = "voyageai/voyage-4";
-export const EMBEDDING_DIMENSIONS = 1024;
+export const EMBEDDING_MODEL = CONFIG.embedding.model;
+export const EMBEDDING_DIMENSIONS = CONFIG.embedding.dimensions;
 
 export type EmbeddingInputType = "document" | "query";
 
@@ -11,11 +12,10 @@ export async function embedText(
   requestId?: string,
   configuredApiKey?: string,
 ): Promise<number[]> {
-  const apiKey = (configuredApiKey ?? process.env.OPENROUTER_API_KEY)?.trim();
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY is required");
+  const apiKey = getOpenRouterApiKey(configuredApiKey);
 
   logger.debug(`embedding request started (${inputType})`, requestId);
-  const response = await fetch("https://openrouter.ai/api/v1/embeddings", {
+  const response = await fetch(CONFIG.embedding.endpoint, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,

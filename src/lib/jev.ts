@@ -1,8 +1,8 @@
+import { CONFIG, getOpenRouterApiKey } from "../config/config.js";
 import { logger } from "./logger.js";
 import type { AttemptRecord } from "./graph.js";
 
-export const JEV_MODEL = "typesafe/jev-1.13";
-const JEV_ENDPOINT = "https://openrouter.ai/api/alpha/decisions";
+export const JEV_MODEL = CONFIG.relevance.model;
 
 export async function jevRelevance(
   query: string,
@@ -10,11 +10,10 @@ export async function jevRelevance(
   requestId?: string,
   configuredApiKey?: string,
 ): Promise<number> {
-  const apiKey = (configuredApiKey ?? process.env.OPENROUTER_API_KEY)?.trim();
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY is required");
+  const apiKey = getOpenRouterApiKey(configuredApiKey);
 
   logger.debug("relevance request started", requestId);
-  const response = await fetch(JEV_ENDPOINT, {
+  const response = await fetch(CONFIG.relevance.endpoint, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,

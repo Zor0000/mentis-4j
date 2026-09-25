@@ -5,18 +5,24 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Database } from "../lib/db.js";
 import { MemoryGraph } from "../lib/graph.js";
 import { registerTools } from "../lib/tools.js";
+import { CONFIG } from "../config/config.js";
 import { logger } from "../lib/logger.js";
 
 async function main(): Promise<void> {
   let database: Database | undefined;
 
   try {
-    if (existsSync(".env")) process.loadEnvFile(".env");
+    if (existsSync(CONFIG.app.envFile)) {
+      process.loadEnvFile(CONFIG.app.envFile);
+    }
     database = new Database();
     await database.verifyConnectivity();
     logger.info("Mentis connected to Neo4j");
 
-    const server = new McpServer({ name: "mentis-4j", version: "0.1.0" });
+    const server = new McpServer({
+      name: CONFIG.app.name,
+      version: CONFIG.app.version,
+    });
     registerTools(server, new MemoryGraph(database));
 
     let closePromise: Promise<void> | undefined;

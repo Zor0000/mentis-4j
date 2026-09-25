@@ -1,3 +1,4 @@
+import { CONFIG, parseStdioEnvironment } from "../config/config.js";
 import { logger } from "./logger.js";
 import neo4j, {
   type Driver,
@@ -7,6 +8,7 @@ import neo4j, {
 
 export interface DatabaseConfig {
   uri: string;
+  username: string;
   password: string;
   database: string;
 }
@@ -22,22 +24,13 @@ export interface ReadQueryResult {
   truncationReason: "row_limit" | "response_size_limit" | null;
 }
 
-const MAX_READ_ROWS = 100;
-const MAX_READ_RESPONSE_BYTES = 512_000;
-const READ_TIMEOUT_MS = 5_000;
-
-export function databaseConfigFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
-): DatabaseConfig {
-  const password = env.NEO4J_PASSWORD?.trim();
-  if (!password) {
-    throw new Error("NEO4J_PASSWORD is required");
-  }
-
+export function databaseConfigFromEnv(env?: NodeJS.ProcessEnv): DatabaseConfig {
+  const configured = parseStdioEnvironment(env);
   return {
-    uri: env.NEO4J_URI ?? "bolt://127.0.0.1:7687",
-    password,
-    database: env.NEO4J_DATABASE ?? "neo4j",
+    uri: configured.NEO4J_URI ?? CONFIG.neo4j.defaultUri,
+    username: configured.NEO4J_USERNAME ?? CONFIG.neo4j.username,
+    password: configured.NEO4J_PASSWORD,
+    database: configured.NEO4J_DATABASE ?? CONFIG.neo4j.defaultDatabase,
   };
 }
 
@@ -48,7 +41,7 @@ export class Database {
   constructor(config: DatabaseConfig = databaseConfigFromEnv()) {
     this.driver = neo4j.driver(
       config.uri,
-      neo4j.auth.basic("neo4j", config.password),
+      neo4j.auth.basic(config.username, config.password),
     );
     this.database = config.database;
   }
@@ -79,10 +72,12 @@ export class Database {
     parameters: Record<string, unknown>,
     requestId?: string,
   ): Promise<ReadQueryResult> {
-    if ("__mentisRowLimit" in parameters) {
-      throw new Error("parameter name __mentisRowLimit is reserved");
+    if (CONFIG.recall.rowLimitParameter in parameters) {
+      throw new Error(
+        `parameter name ${CONFIG.recall.rowLimitParameter} is reserved`,
+      );
     }
-    const statement = `CALL {\n${cypher.replace(/;\s*$/, "")}\n}\nRETURN * LIMIT $__mentisRowLimit`;
+    const statement = `CALL {\n${cypher.replace(/;\s*$/, "")}\n}\nRETURN * LIMIT $${CONFIG.recall.rowLimitParameter}`;
     return this.read(
       (transaction) =>
         new Promise<ReadQueryResult>((resolve, reject) => {
@@ -103,18 +98,20 @@ export class Database {
             ) - 2;
           const result = transaction.run(statement, {
             ...parameters,
-            __mentisRowLimit: neo4j.int(MAX_READ_ROWS + 1),
+            [CONFIG.recall.rowLimitParameter]: neo4j.int(
+              CONFIG.neo4j.maxReadRows + 1,
+            ),
           });
 
           result.subscribe({
             onKeys: (keys) => {
               columns.push(...keys);
               bytes = responseHeaderBytes();
-              metadataTooLarge = bytes + 2 > MAX_READ_RESPONSE_BYTES;
+              metadataTooLarge = bytes + 2 > CONFIG.neo4j.maxReadResponseBytes;
             },
             onNext: (record) => {
               if (truncated || metadataTooLarge) return;
-              if (rows.length >= MAX_READ_ROWS) {
+              if (rows.length >= CONFIG.neo4j.maxReadRows) {
                 truncated = true;
                 truncationReason = "row_limit";
                 return;
@@ -125,7 +122,7 @@ export class Database {
               const rowBytes =
                 Buffer.byteLength(JSON.stringify(row)) +
                 (rows.length > 0 ? 1 : 0);
-              if (bytes + rowBytes + 2 > MAX_READ_RESPONSE_BYTES) {
+              if (bytes + rowBytes + 2 > CONFIG.neo4j.maxReadResponseBytes) {
                 truncated = true;
                 truncationReason = "response_size_limit";
                 return;
@@ -145,7 +142,7 @@ export class Database {
             onError: reject,
           });
         }),
-      { timeout: READ_TIMEOUT_MS },
+      { timeout: CONFIG.neo4j.readTimeoutMs },
       requestId,
     );
   }

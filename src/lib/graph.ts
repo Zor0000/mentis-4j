@@ -1,10 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Record as Neo4jRecord } from "neo4j-driver";
-import {
-  EMBEDDING_DIMENSIONS,
-  embedText,
-  type EmbeddingInputType,
-} from "./embeddings.js";
+import { CONFIG } from "../config/config.js";
+import { embedText, type EmbeddingInputType } from "./embeddings.js";
 import type { Database } from "./db.js";
 import { jevRelevance } from "./jev.js";
 import { logger } from "./logger.js";
@@ -97,7 +94,7 @@ const recordAttemptQuery = `
 `;
 
 const searchQuery = `
-  CALL db.index.vector.queryNodes('attempt_embedding', $candidateLimit, $embedding)
+  CALL db.index.vector.queryNodes('${CONFIG.search.vectorIndex}', $candidateLimit, $embedding)
   YIELD node, score
   MATCH (t:Task)-[:HAS_ATTEMPT]->(node)
   MATCH (r:Repository {identity: t.repositoryIdentity})-[:HAS_TASK]->(t)
@@ -113,14 +110,10 @@ const searchQuery = `
          node.checkResult AS checkResult,
          node.evidenceReferences AS evidenceReferences,
          node.recordedAt AS recordedAt,
-         substring(trim(coalesce(node.action, '') + ' — ' + coalesce(node.observation, '')), 0, 240) AS matchedAttemptPreview,
+         substring(trim(coalesce(node.action, '') + ' — ' + coalesce(node.observation, '')), 0, ${CONFIG.search.previewLength}) AS matchedAttemptPreview,
          score AS similarity
   ORDER BY similarity DESC
 `;
-
-const MAX_SEARCH_LIMIT = 20;
-const MAX_VECTOR_MATCHES = 200;
-const MAX_ATTEMPTS_PER_TASK = 5;
 
 interface SearchMatch {
   candidate: SearchCandidate;
@@ -178,7 +171,7 @@ export class MemoryGraph {
     input: SearchInput,
     requestId?: string,
   ): Promise<SearchCandidate[]> {
-    const limit = input.limit ?? 10;
+    const limit = input.limit ?? CONFIG.search.defaultLimit;
     validateSearch(input.query, limit);
     const embedding = await this.embed(input.query, "query", requestId);
     logger.debug("search embedding ready", requestId);
@@ -187,7 +180,7 @@ export class MemoryGraph {
       async (transaction) => {
         const result = await transaction.run(searchQuery, {
           embedding,
-          candidateLimit: MAX_VECTOR_MATCHES,
+          candidateLimit: CONFIG.search.maxVectorMatches,
         });
         logger.debug(
           `search fetched ${result.records.length} vector matches`,
@@ -198,7 +191,7 @@ export class MemoryGraph {
           const attempt = mapAttempt(record);
           const key = JSON.stringify([attempt.repository, attempt.taskId]);
           const taskMatches = matches.get(key) ?? [];
-          if (taskMatches.length >= MAX_ATTEMPTS_PER_TASK) continue;
+          if (taskMatches.length >= CONFIG.search.maxAttemptsPerTask) continue;
           taskMatches.push({
             attempt,
             candidate: {
@@ -228,11 +221,11 @@ export class MemoryGraph {
       for (
         let offset = 0;
         offset < matches.length;
-        offset += MAX_SEARCH_LIMIT
+        offset += CONFIG.relevance.batchSize
       ) {
         const scored = await Promise.all(
           matches
-            .slice(offset, offset + MAX_SEARCH_LIMIT)
+            .slice(offset, offset + CONFIG.relevance.batchSize)
             .map(async ({ candidate, attempt }) => ({
               ...candidate,
               relevanceScore: await this.relevance(
@@ -251,7 +244,10 @@ export class MemoryGraph {
         }
       }
       return [...best.values()]
-        .filter((candidate) => candidate.relevanceScore >= 0.5)
+        .filter(
+          (candidate) =>
+            candidate.relevanceScore >= CONFIG.relevance.minimumScore,
+        )
         .sort(
           (a, b) =>
             b.relevanceScore - a.relevanceScore || b.similarity - a.similarity,
@@ -314,24 +310,32 @@ function validateRecordAttempt(input: RecordAttemptInput): void {
 
 function validateSearch(query: string, limit: number): void {
   requireText(query);
-  if (query.length > 4000)
-    throw new Error("query must be at most 4000 characters");
-  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_SEARCH_LIMIT) {
-    throw new Error(`limit must be an integer from 1 to ${MAX_SEARCH_LIMIT}`);
+  if (query.length > CONFIG.search.maxQueryLength)
+    throw new Error(
+      `query must be at most ${CONFIG.search.maxQueryLength} characters`,
+    );
+  if (!Number.isInteger(limit) || limit < 1 || limit > CONFIG.search.maxLimit) {
+    throw new Error(
+      `limit must be an integer from 1 to ${CONFIG.search.maxLimit}`,
+    );
   }
 }
 
 function validateRecall(input: RecallInput): void {
   requireText(input.cypher);
-  if (input.cypher.length > 10000) {
-    throw new Error("cypher must be at most 10000 characters");
+  if (input.cypher.length > CONFIG.recall.maxCypherLength) {
+    throw new Error(
+      `cypher must be at most ${CONFIG.recall.maxCypherLength} characters`,
+    );
   }
   if (input.parameters !== undefined && typeof input.parameters !== "object") {
     throw new Error("parameters must be an object");
   }
   for (const key of Object.keys(input.parameters ?? {})) {
-    if (key.startsWith("__mentis")) {
-      throw new Error("parameter names starting with __mentis are reserved");
+    if (key.startsWith(CONFIG.recall.reservedParameterPrefix)) {
+      throw new Error(
+        `parameter names starting with ${CONFIG.recall.reservedParameterPrefix} are reserved`,
+      );
     }
   }
 }
@@ -339,11 +343,11 @@ function validateRecall(input: RecallInput): void {
 function validateEmbedding(embedding: number[]): void {
   if (
     !Array.isArray(embedding) ||
-    embedding.length !== EMBEDDING_DIMENSIONS ||
+    embedding.length !== CONFIG.embedding.dimensions ||
     !embedding.every(Number.isFinite)
   ) {
     throw new Error(
-      `Embedding must contain ${EMBEDDING_DIMENSIONS} finite numbers`,
+      `Embedding must contain ${CONFIG.embedding.dimensions} finite numbers`,
     );
   }
 }

@@ -8,9 +8,8 @@ import { test } from "node:test";
 const wrangler = fileURLToPath(
   new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url),
 );
-
 test(
-  "Worker serves protected-resource discovery and CSRF-protected Google consent",
+  "Worker serves the MCP endpoint without authentication",
   { timeout: 30_000 },
   async () => {
     const port = await freePort();
@@ -22,75 +21,37 @@ test(
     const origin = `http://127.0.0.1:${port}`;
 
     try {
-      const challenge = await waitForWorker(server, origin);
-      assert.equal(challenge.status, 401);
-      const metadataUrl = challenge.headers
-        .get("www-authenticate")
-        .match(/resource_metadata="([^"]+)"/)[1];
-      const resourceMetadata = await fetch(metadataUrl).then((r) => r.json());
-      assert.equal(resourceMetadata.resource, `${origin}/mcp`);
+      await waitForWorker(server, origin);
 
-      const registration = await fetch(`${origin}/oauth/register`, {
+      const get = await fetch(`${origin}/mcp`);
+      assert.equal(get.status, 405);
+      assert.equal(get.headers.get("allow"), "POST");
+
+      const initialize = await fetch(`${origin}/mcp`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
         body: JSON.stringify({
-          client_name: "Worker test",
-          redirect_uris: [`${origin}/callback`],
-          grant_types: ["authorization_code", "refresh_token"],
-          response_types: ["code"],
-          token_endpoint_auth_method: "none",
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: "2025-03-26",
+            capabilities: {},
+            clientInfo: { name: "anonymous-test", version: "1.0.0" },
+          },
         }),
       });
-      assert.equal(registration.status, 201);
-      const { client_id: clientId } = await registration.json();
+      assert.equal(initialize.status, 200);
+      assert.equal(
+        (await initialize.json()).result.serverInfo.name,
+        "mentis-4j",
+      );
 
-      const authorization = new URL(`${origin}/authorize`);
-      authorization.search = new URLSearchParams({
-        client_id: clientId,
-        response_type: "code",
-        redirect_uri: `${origin}/callback`,
-        code_challenge: "A".repeat(43),
-        code_challenge_method: "S256",
-        state: "client-state",
-        resource: `${origin}/mcp`,
-      });
-      const consent = await fetch(authorization);
-      assert.equal(consent.status, 200);
-      const page = await consent.text();
-      const formState = page.match(/name="state" value="([^"]+)"/)[1];
-      const csrf = page.match(/name="csrf" value="([^"]+)"/)[1];
-      const body = new URLSearchParams({
-        state: formState,
-        csrf,
-        decision: "allow",
-      });
-
-      const rejected = await fetch(`${origin}/authorize/consent`, {
-        method: "POST",
-        headers: {
-          origin: "https://attacker.invalid",
-          "content-type": "application/x-www-form-urlencoded",
-        },
-        body,
-        redirect: "manual",
-      });
-      assert.equal(rejected.status, 403);
-
-      const accepted = await fetch(`${origin}/authorize/consent`, {
-        method: "POST",
-        headers: {
-          origin,
-          "content-type": "application/x-www-form-urlencoded",
-        },
-        body,
-        redirect: "manual",
-      });
-      assert.equal(accepted.status, 302);
-      const googleUrl = new URL(accepted.headers.get("location"));
-      assert.equal(googleUrl.origin, "https://accounts.google.com");
-      assert.equal(googleUrl.searchParams.get("scope"), "openid");
-      assert.ok(googleUrl.searchParams.get("state"));
-      assert.ok(googleUrl.searchParams.get("nonce"));
+      const unknownRoute = await fetch(`${origin}/`);
+      assert.equal(unknownRoute.status, 404);
     } finally {
       if (server.exitCode === null) {
         server.kill("SIGTERM");
@@ -119,10 +80,12 @@ async function waitForWorker(server, origin) {
     if (server.exitCode !== null)
       throw new Error("Wrangler exited before ready");
     try {
-      return await fetch(`${origin}/mcp`);
+      const response = await fetch(`${origin}/mcp`);
+      if (response.status === 405) return response;
     } catch {
-      await delay(200);
+      // Wrangler is still starting.
     }
+    await delay(200);
   }
   throw new Error("Wrangler did not start in time");
 }

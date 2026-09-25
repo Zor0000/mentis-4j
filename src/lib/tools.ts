@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { CONFIG } from "../config/config.js";
 import { logger } from "./logger.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -15,13 +16,15 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
         "Find candidate tasks by semantic similarity. Returns at most limit distinct tasks, not limit vector matches. Each task previews a matched attempt; similarity is not a success rating. Inspect full histories with recall before reusing anything.",
       inputSchema: z
         .object({
-          query: text.max(4000).describe("Natural-language problem or context"),
+          query: text
+            .max(CONFIG.search.maxQueryLength)
+            .describe("Natural-language problem or context"),
           limit: z
             .number()
             .int()
             .min(1)
-            .max(20)
-            .default(10)
+            .max(CONFIG.search.maxLimit)
+            .default(CONFIG.search.defaultLimit)
             .describe(
               "Maximum number of distinct task results (not vector matches)",
             ),
@@ -65,7 +68,7 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
       inputSchema: z
         .object({
           cypher: text
-            .max(10000)
+            .max(CONFIG.recall.maxCypherLength)
             .describe("Cypher query to run against memory"),
           parameters: z.record(z.string(), z.unknown()).default({}),
         })

@@ -1,15 +1,10 @@
-import process from "node:process";
+import { CONFIG, getLogLevel } from "../config/config.js";
 
-const levels = { debug: 0, info: 1, error: 2 } as const;
-type Level = keyof typeof levels;
+type Level = keyof typeof CONFIG.logging.levels;
 
 function log(level: Level, message: string, requestId?: string): void {
-  const configured = process.env.LOG_LEVEL;
-  const threshold =
-    configured && configured in levels
-      ? levels[configured as Level]
-      : levels.debug;
-  if (levels[level] < threshold) return;
+  const threshold = CONFIG.logging.levels[getLogLevel()];
+  if (CONFIG.logging.levels[level] < threshold) return;
   const entry = `${JSON.stringify({ level, message, ...(requestId ? { request_id: requestId } : {}) })}\n`;
   if (typeof process.stderr?.write === "function") process.stderr.write(entry);
   else console.error(entry.trimEnd());
