@@ -1,6 +1,6 @@
 # Mentis-4j
 
-Mentis is a stdio MCP server that stores coding attempts in Neo4j. It uses embeddings to find related tasks. Agents use Cypher to inspect the attempts associated with a task.
+Mentis stores coding attempts in Neo4j and finds related tasks with embeddings. It provides a local stdio MCP server and an optional Cloudflare Worker Streamable HTTP endpoint. Agents use Cypher to inspect attempts associated with a task.
 
 ## Set up the server
 
@@ -54,13 +54,36 @@ Mentis is a stdio MCP server that stores coding attempts in Neo4j. It uses embed
 - `NEO4J_PASSWORD`: Required. Password for the default `neo4j` account.
 - `NEO4J_URI`: Defaults to `bolt://127.0.0.1:7687`.
 - `NEO4J_DATABASE`: Defaults to `neo4j`.
+- `NEO4J_USERNAME`: Defaults to `neo4j`.
 - `OPENROUTER_API_KEY`: Required for `search` and `record_attempt`.
+- `LOG_LEVEL`: `debug`, `info`, or `error`; defaults to `debug`.
+
+## Deploy the Cloudflare Worker
+
+The Worker exposes the same MCP tools over Streamable HTTP at `/mcp`. It has **no authentication**: anyone who can reach the endpoint can inspect and modify its memory and trigger OpenRouter usage. `recall` runs caller-authored Cypher and is not a complete read-only security boundary. Deploy only an isolated demo database with no sensitive data, and monitor provider usage; do not expose production data.
+
+The Worker needs a Neo4j URI reachable from Cloudflare Workers, a Neo4j password, and an online vector index for `search`. Set these as Wrangler secrets (each command prompts for the value):
+
+```sh
+npx wrangler secret put NEO4J_URI
+npx wrangler secret put NEO4J_PASSWORD
+npx wrangler secret put OPENROUTER_API_KEY
+```
+
+`OPENROUTER_API_KEY` is required for `search` and `record_attempt`; `recall` does not use it. `NEO4J_USERNAME` and `NEO4J_DATABASE` are optional and default to `neo4j`. Then deploy:
+
+```sh
+npm run worker:build
+npm run worker:deploy
+```
+
+Use the deployed Worker URL with `/mcp` as the MCP endpoint. For local Worker development, provide the same values in Wrangler's ignored `.dev.vars` file and run `npm run worker:dev`.
 
 ## MCP tools
 
 ### `search`
 
-Provide a natural-language `query` (maximum 4,000 characters) and, optionally, a `limit` (default 10; maximum 20). The tool embeds the query and returns distinct `(repository, taskId)` candidates with a matched-attempt preview and similarity score. Search covers the entire graph; there is no project-membership filter. Similarity does not indicate whether an attempt succeeded.
+Provide a natural-language `query` (maximum 4,000 characters) and, optionally, a `limit` (default 10; maximum 20). The tool embeds the query, retrieves vector matches, then uses OpenRouter Jev to score their relevance and returns distinct `(repository, taskId)` candidates with a matched-attempt preview, similarity, and relevance score. If relevance scoring fails, it falls back to vector-ranked candidates with a null relevance score. Search covers the entire graph; there is no project-membership filter. Neither score indicates whether an attempt succeeded.
 
 ### `recall`
 
@@ -82,7 +105,7 @@ Before writing, the server sends the attempt text to OpenRouter for a document e
 
 Task IDs are scoped by repository. Each attempt has one embedding; tasks and relationships do not. Search returns at most one candidate per `(repository, taskId)`. Passing and failed attempts both remain available for inspection.
 
-The embedding model is `voyageai/voyage-4` through OpenRouter. It produces 1,024-dimensional vectors compared with cosine similarity. Query requests use `input_type: "query"`; attempt requests use `input_type: "document"`. Attempt text contains, in order: repository, task ID, code context, action, affected files, observation, inference, check method and result, and evidence references. Changing the model, vector dimensions, or text format requires re-embedding stored attempts. Verify OpenRouter's `input_type` handling with a live API check before relying on retrieval quality. Attempts without vectors remain available through `recall` but do not appear in `search`. No backfill command is provided.
+The embedding model is `voyageai/voyage-4` through OpenRouter. It produces 1,024-dimensional vectors compared with cosine similarity. Query requests use `input_type: "query"`; attempt requests use `input_type: "document"`. Search also scores vector matches for relevance with `typesafe/jev-1.13` through OpenRouter; results below 0.5 are filtered out when scoring succeeds. Attempt text contains, in order: repository, task ID, code context, action, affected files, observation, inference, check method and result, and evidence references. Changing the model, vector dimensions, or text format requires re-embedding stored attempts. Verify OpenRouter's `input_type` handling with a live API check before relying on retrieval quality. Attempts without vectors remain available through `recall` but do not appear in `search`. No backfill command is provided.
 
 Search queries and assembled attempt text are sent to OpenRouter. They can contain repository names, paths, and observations. Do not include secrets, credentials, or sensitive incident data. Store evidence references instead of full transcripts when possible.
 
