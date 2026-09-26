@@ -53,6 +53,28 @@ test("registers and dispatches attempt correction and deletion tools", async () 
   assert.equal(forgotten.structuredContent.forgotten, true);
 });
 
+test("search requires the caller's repository identity", () => {
+  let schema;
+  registerTools(
+    {
+      registerTool: (name, config) => {
+        if (name === "search") schema = config.inputSchema;
+      },
+    },
+    {},
+  );
+  assert.equal(schema.safeParse({ query: "login issue" }).success, false);
+  assert.equal(
+    schema.safeParse({ repository: "", query: "login issue" }).success,
+    false,
+  );
+  assert.equal(
+    schema.safeParse({ repository: "/absolute/workdir", query: "login issue" })
+      .success,
+    true,
+  );
+});
+
 test(
   "stdio tools search tasks, record attempts, and run agent-authored recall",
   { skip: !canRun },
@@ -140,6 +162,7 @@ test(
       const searched = await client.callTool({
         name: "search",
         arguments: {
+          repository,
           query: "users keep landing back on the login screen after signing in",
           limit: 20,
         },
@@ -153,6 +176,9 @@ test(
         ),
       );
       assert.ok(candidates.some(({ taskId }) => taskId === shared.taskId));
+      assert.ok(
+        candidates.every((candidate) => candidate.repository === repository),
+      );
       assert.equal(
         candidates.filter(({ taskId }) => taskId === shared.taskId).length,
         1,
@@ -228,9 +254,16 @@ test(
       assert.equal(invalid.isError, true);
       assert.match(invalid.content[0].text, /Input validation error/);
 
+      const missingRepository = await client.callTool({
+        name: "search",
+        arguments: { query: "login issue" },
+      });
+      assert.equal(missingRepository.isError, true);
+      assert.match(missingRepository.content[0].text, /Input validation error/);
+
       const invalidLimit = await client.callTool({
         name: "search",
-        arguments: { query: "login issue", limit: 1000 },
+        arguments: { repository, query: "login issue", limit: 1000 },
       });
       assert.equal(invalidLimit.isError, true);
     } finally {

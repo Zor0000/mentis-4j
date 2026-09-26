@@ -52,6 +52,7 @@ export interface RecallInput {
 }
 
 export interface SearchInput {
+  repository: string;
   query: string;
   limit?: number;
 }
@@ -161,10 +162,11 @@ const forgetAttemptQuery = `
 `;
 
 const searchQuery = `
-  CALL db.index.vector.queryNodes('${CONFIG.search.vectorIndex}', $candidateLimit, $embedding)
-  YIELD node, score
-  MATCH (t:Task)-[:HAS_ATTEMPT]->(node)
-  MATCH (r:Repository {identity: t.repositoryIdentity})-[:HAS_TASK]->(t)
+  MATCH (r:Repository {identity: $repository})-[:HAS_TASK]->(t:Task)-[:HAS_ATTEMPT]->(node:Attempt)
+  WHERE node.embedding IS NOT NULL
+  WITH r, t, node, vector.similarity.cosine(node.embedding, $embedding) AS score
+  ORDER BY score DESC
+  LIMIT $candidateLimit
   RETURN r.identity AS repository,
          t.identity AS taskId,
          node.id AS id,
@@ -283,13 +285,14 @@ export class MemoryGraph {
     requestId?: string,
   ): Promise<SearchCandidate[]> {
     const limit = input.limit ?? CONFIG.search.defaultLimit;
-    validateSearch(input.query, limit);
+    validateSearch(input.repository, input.query, limit);
     const embedding = await this.embed(input.query, "query", requestId);
     logger.debug("search embedding ready", requestId);
     validateEmbedding(embedding);
     const tasks = await this.database.read(
       async (transaction) => {
         const result = await transaction.run(searchQuery, {
+          repository: input.repository,
           embedding,
           candidateLimit: CONFIG.search.maxVectorMatches,
         });
@@ -446,7 +449,12 @@ function validateForgetAttempt(input: ForgetAttemptInput): void {
   requireText(input.attemptId);
 }
 
-function validateSearch(query: string, limit: number): void {
+function validateSearch(
+  repository: string,
+  query: string,
+  limit: number,
+): void {
+  requireText(repository);
   requireText(query);
   if (query.length > CONFIG.search.maxQueryLength)
     throw new Error(

@@ -144,6 +144,14 @@ test("embeds the typed attempt as a document before writing it", async () => {
   assert.equal(recorded.gitDirty, true);
 });
 
+test("search rejects a missing repository before embedding or reading", async () => {
+  const graph = new MemoryGraph(
+    { read: () => assert.fail("must not read") },
+    () => assert.fail("must not embed"),
+  );
+  await assert.rejects(graph.search({ query: "login" }), /non-empty string/);
+});
+
 test("search exposes the matched attempt's Git and outdated status", async () => {
   const graph = graphForSearch(
     [
@@ -166,24 +174,27 @@ test("search exposes the matched attempt's Git and outdated status", async () =>
     async () => 1,
   );
 
-  assert.deepEqual(await graph.search({ query: "cookie auth" }), [
-    {
-      repository: "repo",
-      taskId: "task",
-      matchedAttemptId: "attempt-1",
-      matchedAttemptPreview: "Keep cookie auth — observation",
-      matchedAttemptVerification: "passed",
-      gitCommit: "a8c3f2",
-      gitDirty: true,
-      outdated: {
-        reason: "Header auth replaced this path",
-        correctedAt: "2025-02-01T00:00:00.000Z",
-        latestCommit: "b7d9e1",
+  assert.deepEqual(
+    await graph.search({ repository: "repo", query: "cookie auth" }),
+    [
+      {
+        repository: "repo",
+        taskId: "task",
+        matchedAttemptId: "attempt-1",
+        matchedAttemptPreview: "Keep cookie auth — observation",
+        matchedAttemptVerification: "passed",
+        gitCommit: "a8c3f2",
+        gitDirty: true,
+        outdated: {
+          reason: "Header auth replaced this path",
+          correctedAt: "2025-02-01T00:00:00.000Z",
+          latestCommit: "b7d9e1",
+        },
+        similarity: 0.9,
+        relevanceScore: 1,
       },
-      similarity: 0.9,
-      relevanceScore: 1,
-    },
-  ]);
+    ],
+  );
 });
 
 test("marks an attempt outdated without changing its original evidence", async () => {
@@ -264,7 +275,7 @@ test("forgets only an attempt scoped to its repository", async () => {
   assert.deepEqual(parameters, { repository: "repo", attemptId: "attempt-2" });
 });
 
-test("search uses a bounded vector pool without stopping at the task limit", async () => {
+test("search limits candidates after scoping to the requested repository", async () => {
   const matches = [
     ...Array.from({ length: 100 }, (_, index) => ({
       repository: attempt.repository,
@@ -286,13 +297,25 @@ test("search uses a bounded vector pool without stopping at the task limit", asy
     })),
   ];
   const candidateLimits = [];
+  matches.unshift(
+    ...Array.from({ length: 201 }, (_, index) => ({
+      repository: "https://example.test/other.git",
+      taskId: `other-${index}`,
+      similarity: 1,
+    })),
+  );
   const database = {
     read: (work) =>
       work({
-        run: async (_query, parameters) => {
+        run: async (query, parameters) => {
+          assert.match(query, /Repository \{identity: \$repository\}/);
+          assert.match(query, /vector\.similarity\.cosine/);
+          assert.match(query, /LIMIT \$candidateLimit/);
+          assert.equal(parameters.repository, attempt.repository);
           candidateLimits.push(parameters.candidateLimit);
           return {
             records: matches
+              .filter(({ repository }) => repository === parameters.repository)
               .slice(0, parameters.candidateLimit)
               .map(searchRecord),
           };
@@ -305,7 +328,11 @@ test("search uses a bounded vector pool without stopping at the task limit", asy
     async () => 1,
   );
 
-  const candidates = await graph.search({ query: "test", limit: 10 });
+  const candidates = await graph.search({
+    repository: attempt.repository,
+    query: "test",
+    limit: 10,
+  });
 
   assert.deepEqual(candidateLimits, [200]);
   assert.equal(candidates.length, 10);
@@ -320,10 +347,7 @@ test("search uses a bounded vector pool without stopping at the task limit", asy
   assert.equal(candidates[0].taskId, "many-attempts");
   assert.equal(candidates[0].relevanceScore, 1);
   assert.ok(
-    candidates.some(
-      ({ repository, taskId }) =>
-        repository !== attempt.repository && taskId === "many-attempts",
-    ),
+    candidates.every(({ repository }) => repository === attempt.repository),
   );
   assert.ok(candidates.some(({ taskId }) => taskId === "other-task-0"));
 });
@@ -389,7 +413,11 @@ test("filters and ranks distinct tasks by Jev relevance", async () => {
     return probabilities[matchedAttempt.id];
   });
 
-  const candidates = await graph.search({ query: "search query", limit: 10 });
+  const candidates = await graph.search({
+    repository: attempt.repository,
+    query: "search query",
+    limit: 10,
+  });
 
   assert.deepEqual(scoredAttempts, [
     "a-first",
@@ -455,7 +483,11 @@ test("search scores up to five attempts per task and selects its most useful mat
     return scores[matchedAttempt.id];
   });
 
-  const candidates = await graph.search({ query: "login loop", limit: 1 });
+  const candidates = await graph.search({
+    repository: attempt.repository,
+    query: "login loop",
+    limit: 1,
+  });
 
   assert.deepEqual(scored, [
     "failed",
@@ -483,7 +515,10 @@ test("empty vector results do not call Jev", async () => {
   let relevanceCalls = 0;
   const graph = graphForSearch([], async () => relevanceCalls++);
 
-  assert.deepEqual(await graph.search({ query: "no matches" }), []);
+  assert.deepEqual(
+    await graph.search({ repository: attempt.repository, query: "no matches" }),
+    [],
+  );
   assert.equal(relevanceCalls, 0);
 });
 
@@ -513,7 +548,10 @@ test("Jev failures return all vector candidates with null relevance scores", asy
     return 0.1;
   });
 
-  const candidates = await graph.search({ query: "search query" });
+  const candidates = await graph.search({
+    repository: attempt.repository,
+    query: "search query",
+  });
 
   assert.deepEqual(
     candidates.map(({ taskId, similarity, relevanceScore }) => [
@@ -598,6 +636,7 @@ test(
       await graph.forgetAttempt({ repository, attemptId: forgotten.id });
 
       const candidates = await graph.search({
+        repository,
         query:
           "users are repeatedly returned to the login screen after signing in",
         limit: 20,

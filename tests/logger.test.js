@@ -52,7 +52,7 @@ test("tool logs share the request ID passed to the graph", async () => {
     return true;
   };
   try {
-    await handlers.search({ query: "test" });
+    await handlers.search({ repository: "repo", query: "test" });
     assert.deepEqual(
       lines.map(({ message }) => message.split(" ")[0]),
       ["search", "search"],

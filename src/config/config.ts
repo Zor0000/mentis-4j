@@ -23,7 +23,6 @@ export const CONFIG = {
     batchSize: 20,
   },
   search: {
-    vectorIndex: "attempt_embedding",
     defaultLimit: 10,
     maxLimit: 20,
     maxQueryLength: 4_000,

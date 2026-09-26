@@ -14,9 +14,12 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
     "search",
     {
       description:
-        "Find candidate tasks by semantic similarity. Returns at most limit distinct tasks, not limit vector matches. Each task identifies its matched attempt and exposes its recorded Git state and outdated status. A passed check is evidence only about that attempt's recorded code state, not verification of the current checkout. Similarity is not a success rating; inspect full histories with recall before reusing anything.",
+        "Find candidate tasks within one repository by semantic similarity. From the client's checkout, check `git rev-parse --is-inside-work-tree`. If inside a Git repo, use `git remote get-url origin`; if that fails, report an error and do not call search. If outside Git, use the absolute working-directory path (`pwd -P`). Returns at most limit distinct tasks, not limit vector matches. Each task identifies its matched attempt and exposes its recorded Git state and outdated status. Similarity is not a success rating; inspect full histories with recall before reusing anything.",
       inputSchema: z
         .object({
+          repository: text.describe(
+            "Client checkout's `git remote get-url origin`, or absolute working-directory path only when outside Git; do not fall back if origin is missing",
+          ),
           query: text
             .max(CONFIG.search.maxQueryLength)
             .describe("Natural-language problem or context"),
@@ -106,7 +109,7 @@ export function registerTools(server: McpServer, graph: MemoryGraph): void {
       inputSchema: z
         .object({
           repository: text.describe(
-            "Stable repository identity, such as a Git remote",
+            "Client checkout's `git remote get-url origin`, or absolute working-directory path only when outside Git; do not fall back if origin is missing",
           ),
           taskId: text.describe(
             "Identity of this investigation, not a symptom shared by tasks",
