@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Record as Neo4jRecord } from "neo4j-driver";
+import neo4j, { type Record as Neo4jRecord } from "neo4j-driver";
 import { CONFIG } from "../config/config.js";
 import { embedText, type EmbeddingInputType } from "./embeddings.js";
 import type { Database } from "./db.js";
@@ -294,7 +294,7 @@ export class MemoryGraph {
         const result = await transaction.run(searchQuery, {
           repository: input.repository,
           embedding,
-          candidateLimit: CONFIG.search.maxVectorMatches,
+          candidateLimit: neo4j.int(CONFIG.search.maxVectorMatches),
         });
         logger.debug(
           `search fetched ${result.records.length} vector matches`,
