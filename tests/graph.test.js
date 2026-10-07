@@ -312,11 +312,15 @@ test("search limits candidates after scoping to the requested repository", async
           assert.match(query, /vector\.similarity\.cosine/);
           assert.match(query, /LIMIT \$candidateLimit/);
           assert.equal(parameters.repository, attempt.repository);
-          candidateLimits.push(parameters.candidateLimit);
+          const limit =
+            typeof parameters.candidateLimit?.toNumber === "function"
+              ? parameters.candidateLimit.toNumber()
+              : parameters.candidateLimit;
+          candidateLimits.push(limit);
           return {
             records: matches
               .filter(({ repository }) => repository === parameters.repository)
-              .slice(0, parameters.candidateLimit)
+              .slice(0, limit)
               .map(searchRecord),
           };
         },
